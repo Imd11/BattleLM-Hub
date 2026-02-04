@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BattleLM Terminal</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1e1e1e;
+        }
+
+        #terminal {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="terminal"></div>
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script>
+        // 初始化终端
+        const term = new Terminal({
+            scrollback: 10000,
+            fontSize: 12,
+            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            theme: {
+                background: '#1e1e1e',
+                foreground: '#d4d4d4',
+                cursor: '#aeafad',
+                cursorAccent: '#000000',
+                selectionBackground: '#264f78'
+            },
+            allowProposedApi: true
+        });
+        
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(document.getElementById('terminal'));
+        fitAddon.fit();
+
+        // 避免 WKWebView/xterm 初始化时抢占整个窗口焦点：
+        // 让聊天输入框在新建实例/切换视图后仍可立即点击输入。
+        try {
+            if (document.activeElement) document.activeElement.blur();
+            if (term.textarea) term.textarea.blur();
+        } catch (_) { }
+
+        // 用户点击终端时才聚焦，避免影响其他输入控件
+        document.getElementById('terminal').addEventListener('mousedown', () => {
+            try { term.focus(); } catch (_) { }
+        });
+        
+        // 窗口大小变化时重新适配
+        window.addEventListener('resize', () => {
+            fitAddon.fit();
+            // 通知 Swift 新的尺寸
+            const dims = { cols: term.cols, rows: term.rows };
+            window.webkit?.messageHandlers?.terminalResize?.postMessage(JSON.stringify(dims));
+        });
+        
+        // 用户输入 → 发送到 Swift
+        term.onData(data => {
+            window.webkit?.messageHandlers?.terminalInput?.postMessage(data);
+        });
+        
+        // 供 Swift 调用：写入终端数据
+        window.writeToTerminal = function(data) {
+            term.write(data);
+        };
+        
+        // 供 Swift 调用：写入 base64 编码的数据
+        window.writeBase64 = function(base64Data) {
+            const bytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+            const text = new TextDecoder().decode(bytes);
+            term.write(text);
+        };
+        
+        // 供 Swift 调用：清屏
+        window.clearTerminal = function() {
+            term.clear();
+        };
+        
+        // 供 Swift 调用：获取终端尺寸
+        window.getTerminalSize = function() {
+            return JSON.stringify({ cols: term.cols, rows: term.rows });
+        };
+        
+        // 供 Swift 调用：设置主题颜色
+        window.setTheme = function(themeJson) {
+            try {
+                const theme = JSON.parse(themeJson);
+                term.options.theme = {
+                    background: theme.background || '#1e1e1e',
+                    foreground: theme.foreground || '#d4d4d4',
+                    cursor: theme.cursor || '#aeafad',
+                    cursorAccent: theme.cursorAccent || '#000000',
+                    selectionBackground: theme.selection || '#264f78'
+                };
+                // 更新背景色
+                document.body.style.background = theme.background || '#1e1e1e';
+            } catch (e) {
+                console.error('Failed to set theme:', e);
+            }
+        };
+        
+        // 初始化完成，通知 Swift
+        setTimeout(() => {
+            const dims = { cols: term.cols, rows: term.rows };
+            window.webkit?.messageHandlers?.terminalReady?.postMessage(JSON.stringify(dims));
+        }, 100);
+    </script>
+</body>
+
+</html>
