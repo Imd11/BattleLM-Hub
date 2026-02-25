@@ -1,5 +1,6 @@
 // BattleLM/Views/Settings/Sheets.swift
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 /// 添加 AI 对话框
@@ -10,7 +11,7 @@ struct AddAISheet: View {
     @State private var selectedType: AIType = .claude
     @State private var customName: String = "Claude"  // 默认填充第一个类型的名称
     @State private var workingDirectory: String = ""
-    @State private var showFolderPicker: Bool = false
+    @State private var isPickingFolder: Bool = false
     @State private var isCardContainerHovered: Bool = false
     @State private var scrollOffset: CGFloat = 0
     @State private var showDuplicateAlert: Bool = false
@@ -190,8 +191,9 @@ struct AddAISheet: View {
                         .disabled(true)
                     
                     Button("Browse...") {
-                        showFolderPicker = true
+                        pickWorkingDirectory()
                     }
+                    .buttonStyle(.bordered)
                 }
                 
                 Text("The AI CLI will run in this directory")
@@ -254,15 +256,6 @@ struct AddAISheet: View {
         } message: {
             Text("An AI instance with the name \"\(customName.isEmpty ? selectedType.displayName : customName)\" already exists. Please choose a different name.")
         }
-        .fileImporter(
-            isPresented: $showFolderPicker,
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                workingDirectory = url.path
-            }
-        }
         .onAppear {
             // 预热检测（幂等，不会重复执行）
             appState.startCLIDetection()
@@ -275,6 +268,34 @@ struct AddAISheet: View {
         case .broken: return .red
         case .installed: return .orange
         case .ready: return .green
+        }
+    }
+
+    private func pickWorkingDirectory() {
+        guard !isPickingFolder else { return }
+        isPickingFolder = true
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "Choose"
+        panel.message = "Select project folder"
+
+        if !workingDirectory.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: workingDirectory)
+        } else {
+            panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+        }
+
+        // Use app-modal presentation for reliability when this view itself is a sheet.
+        panel.begin { response in
+            DispatchQueue.main.async {
+                isPickingFolder = false
+                guard response == .OK, let url = panel.url else { return }
+                workingDirectory = url.path
+            }
         }
     }
 }
@@ -318,8 +339,20 @@ struct CreateGroupSheet: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) var dismiss
     
-    @State private var chatName: String = ""
+    enum CreateMode: String, CaseIterable {
+        case quickStart = "Quick Start"
+        case fromExisting = "From Existing"
+    }
+    
+    @State private var selectedMode: CreateMode = .quickStart
+    
+    // Quick Start mode states
+    @State private var selectedAITypes: Set<AIType> = []
+    @State private var workingDirectory: String = NSHomeDirectory()
+    
+    // From Existing mode states
     @State private var selectedAIIds: Set<UUID> = []
+    @State private var chatName: String = ""
     
     var body: some View {
         VStack(spacing: 20) {
@@ -328,6 +361,136 @@ struct CreateGroupSheet: View {
                 .font(.title2)
                 .fontWeight(.bold)
             
+            // 模式选择器
+            Picker("", selection: $selectedMode) {
+                ForEach(CreateMode.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            
+            // 根据模式显示不同内容
+            if selectedMode == .quickStart {
+                quickStartContent
+            } else {
+                fromExistingContent
+            }
+            
+            Spacer()
+            
+            // 按钮
+            HStack {
+                Button("Cancel") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                
+                Spacer()
+                
+                Button(selectedMode == .quickStart ? "Create" : "Create") {
+                    if selectedMode == .quickStart {
+                        createQuickStartGroup()
+                    } else {
+                        createFromExistingGroup()
+                    }
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedMode == .quickStart ? !canStartQuickStart : selectedAIIds.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 500, height: 480)
+        .onAppear {
+            // 预热检测 CLI（与 Add AI Sheet 一致）
+            appState.startCLIDetection()
+            
+            // 如果已有 AI 实例，默认显示 From Existing
+            if !appState.aiInstances.isEmpty {
+                selectedMode = .fromExisting
+            }
+        }
+    }
+    
+    // MARK: - Quick Start Content
+    
+    private var quickStartContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // AI 类型选择
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Select AI Models")
+                    .font(.headline)
+                
+                Text("Choose at least 2 AI models to battle")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                // AI 类型横向滚动（与 Add AI Sheet 一致）
+                VStack(spacing: 8) {
+                    ScrollViewReader { proxy in
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(Array(AIType.allCases.enumerated()), id: \.element.id) { index, type in
+                                    QuickStartAICard(
+                                        type: type,
+                                        isSelected: selectedAITypes.contains(type),
+                                        cliStatus: appState.cliStatusCache[type]
+                                    ) {
+                                        if selectedAITypes.contains(type) {
+                                            selectedAITypes.remove(type)
+                                        } else {
+                                            selectedAITypes.insert(type)
+                                        }
+                                    }
+                                    .id(type.id)
+                                }
+                            }
+                            .padding(.horizontal, 4)
+                        }
+                    }
+                    
+                    // 简化的滚动指示器（只在有多于4个AI类型时显示）
+                    if AIType.allCases.count > 4 {
+                        HStack {
+                            Spacer()
+                            Text("← Scroll to see more →")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                        }
+                    }
+                }
+            }
+            
+            // 工作目录
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Working Directory")
+                    .font(.headline)
+                
+                HStack {
+                    TextField("Select project folder...", text: $workingDirectory)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(true)
+                    
+                    Button("Browse...") {
+                        pickWorkingDirectory()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                
+                Text("All AIs will run in this directory")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+    
+    // MARK: - From Existing Content
+    
+    private var fromExistingContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
             // 群聊名称
             VStack(alignment: .leading, spacing: 8) {
                 Text("Chat Name")
@@ -343,9 +506,16 @@ struct CreateGroupSheet: View {
                     .font(.headline)
                 
                 if appState.aiInstances.isEmpty {
-                    Text("No AI instances available. Please add some first.")
-                        .foregroundColor(.secondary)
-                        .italic()
+                    VStack(spacing: 12) {
+                        Text("No AI instances available")
+                            .foregroundColor(.secondary)
+                        
+                        Text("Switch to \"Quick Start\" to create a group quickly")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
                 } else {
                     // 可滚动的 AI 列表
                     ScrollView {
@@ -364,36 +534,153 @@ struct CreateGroupSheet: View {
                             }
                         }
                     }
-                    .frame(maxHeight: 200)  // 固定最大高度，超出则滚动
+                    .frame(maxHeight: 180)
                 }
-            }
-            
-            Spacer()
-            
-            // 按钮
-            HStack {
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                
-                Spacer()
-                
-                Button("Create") {
-                    let name = chatName.isEmpty ? "New Chat" : chatName
-                    appState.createGroupChat(
-                        name: name,
-                        memberIds: Array(selectedAIIds)
-                    )
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(selectedAIIds.isEmpty)
             }
         }
-        .padding(24)
-        .frame(width: 400, height: 450)  // 稍微增加高度
+    }
+    
+    // MARK: - Actions
+    
+    private func pickWorkingDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a working directory for the AI"
+        
+        if panel.runModal() == .OK, let url = panel.url {
+            workingDirectory = url.path
+        }
+    }
+    
+    private func createQuickStartGroup() {
+        guard canStartQuickStart else { return }
+        var createdAIs: [AIInstance] = []
+        var memberIds: [UUID] = []
+        
+        // 批量创建 AI 实例
+        for type in selectedAITypes {
+            if let ai = appState.addAI(type: type, workingDirectory: workingDirectory) {
+                createdAIs.append(ai)
+                memberIds.append(ai.id)
+            }
+        }
+        
+        // 创建群聊
+        if memberIds.count >= 2 {
+            let chatName = "New Chat"
+            let chatId = appState.createGroupChat(name: chatName, memberIds: memberIds)
+
+            // Quick Start 等同于用户手动 Add AI：创建后立即启动会话。
+            // addAI 会默认隐藏终端面板；Quick Start 作为“一键开打”，恢复终端面板更符合预期。
+            appState.showTerminalPanel = true
+
+            Task {
+                await withTaskGroup(of: Void.self) { group in
+                    for ai in createdAIs {
+                        group.addTask {
+                            do {
+                                try await SessionManager.shared.startSession(for: ai)
+                                await MainActor.run {
+                                    appState.setAIActive(true, for: ai.id)
+                                }
+                            } catch {
+                                await MainActor.run {
+                                    appState.setAIActive(false, for: ai.id)
+                                    appState.appendSystemMessage("⚠️ Failed to start \(ai.name): \(error.localizedDescription)", to: chatId)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private func createFromExistingGroup() {
+        let name = chatName.isEmpty ? "New Chat" : chatName
+        appState.createGroupChat(
+            name: name,
+            memberIds: Array(selectedAIIds)
+        )
+    }
+
+    private var canStartQuickStart: Bool {
+        guard selectedAITypes.count >= 2 else { return false }
+        guard !workingDirectory.isEmpty else { return false }
+        return selectedAITypes.allSatisfy { type in
+            guard let status = appState.cliStatusCache[type] else { return false }
+            return status == .installed || status == .ready
+        }
+    }
+}
+
+/// AI 类型卡片（用于 Quick Start，支持多选和 CLI 状态）
+struct QuickStartAICard: View {
+    let type: AIType
+    let isSelected: Bool
+    let cliStatus: CLIStatus?
+    let action: () -> Void
+    
+    @State private var isHovered: Bool = false
+    
+    private var isReady: Bool {
+        guard let status = cliStatus else { return false }
+        return status == .installed || status == .ready
+    }
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 12) {
+                ZStack(alignment: .topTrailing) {
+                    AILogoView(aiType: type, size: 32)
+                    
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(.green)
+                            .background(Circle().fill(Color(.windowBackgroundColor)).padding(-2))
+                            .offset(x: 6, y: -6)
+                    }
+                }
+                
+                Text(type.displayName)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundColor(.primary)
+                
+                // CLI 状态指示
+                if cliStatus == nil {
+                    ProgressView()
+                        .scaleEffect(0.5)
+                        .frame(height: 10)
+                } else if !isReady {
+                    Text("Not installed")
+                        .font(.system(size: 9))
+                        .foregroundColor(.orange)
+                } else {
+                    Text("Ready")
+                        .font(.system(size: 9))
+                        .foregroundColor(.green)
+                }
+            }
+            .frame(width: 100, height: 100)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(isSelected ? Color.accentColor.opacity(0.15) : (isHovered ? Color.primary.opacity(0.08) : Color(.controlBackgroundColor)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: isSelected ? 2 : 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isReady)
+        .opacity(isReady ? 1.0 : 0.6)
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
 
@@ -447,7 +734,6 @@ struct AISelectionRow: View {
 enum SettingsTab: String, CaseIterable, Identifiable {
     case appearance = "Appearance"
     case terminal = "Terminal"
-    case display = "Display"
     case shortcuts = "Shortcuts"
     
     var id: String { rawValue }
@@ -456,7 +742,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .appearance: return "paintbrush"
         case .terminal: return "terminal"
-        case .display: return "rectangle.3.group"
         case .shortcuts: return "keyboard"
         }
     }
@@ -519,8 +804,6 @@ struct SettingsSheet: View {
                             appearanceContent
                         case .terminal:
                             terminalContent
-                        case .display:
-                            displayContent
                         case .shortcuts:
                             shortcutsContent
                         }
@@ -587,37 +870,6 @@ struct SettingsSheet: View {
         }
     }
     
-    // MARK: - Display Tab
-    private var displayContent: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Toggle("Show Terminal Panel", isOn: $appState.showTerminalPanel)
-            
-            HStack {
-                Text("Terminal Position")
-                Spacer()
-                Picker("", selection: $appState.terminalPosition) {
-                    ForEach(TerminalPosition.allCases) { position in
-                        Label(position.displayName, systemImage: position.iconName)
-                            .tag(position)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-            }
-            
-            HStack {
-                Text("Font Size")
-                Spacer()
-                Picker("", selection: $appState.fontSize) {
-                    ForEach(FontSizeOption.allCases) { size in
-                        Text(size.displayName).tag(size)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 200)
-            }
-        }
-    }
     
     // MARK: - Shortcuts Tab
     private var shortcutsContent: some View {

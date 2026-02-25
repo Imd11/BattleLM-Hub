@@ -6,11 +6,11 @@ import Combine
 struct MainView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.colorScheme) var colorScheme
-    @State private var terminalWidth: CGFloat = 550
+    @State private var terminalWidth: CGFloat = 600
 
     
-    private let minTerminalWidth: CGFloat = 550
-    private let maxTerminalWidth: CGFloat = 600
+    private let minTerminalWidth: CGFloat = 600
+    private let maxTerminalWidth: CGFloat = 700
     
     var body: some View {
         NavigationSplitView {
@@ -42,9 +42,8 @@ struct MainView: View {
                     ResizableDivider(width: $terminalWidth, minWidth: minTerminalWidth, maxWidth: maxTerminalWidth)
                     
                     if let ai = appState.selectedAI {
-                        // 单个 AI 终端 - 使用 id 确保切换时重建视图
+                        // 单个 AI 终端 - 保持 WebView 复用，避免切换时白屏闪烁
                         SingleTerminalView(ai: ai)
-                            .id(ai.id)
                             .frame(width: terminalWidth)
                     } else {
                         // 多 AI 终端
@@ -88,9 +87,25 @@ struct MainView: View {
             }
         }
         .onChange(of: colorScheme) { newScheme in
-            // 当系统 colorScheme 变化时，同步更新终端主题（仅在"跟随系统"模式下）
-            guard appState.appAppearance == .system else { return }
-            let shouldUseDark = newScheme == .dark
+            // 当系统 colorScheme 变化时，同步更新终端主题
+            let shouldUseDark: Bool
+            switch appState.appAppearance {
+            case .dark: shouldUseDark = true
+            case .light: shouldUseDark = false
+            case .system: shouldUseDark = newScheme == .dark
+            }
+            if appState.terminalTheme.isDark != shouldUseDark {
+                appState.terminalTheme = shouldUseDark ? .defaultDark : .defaultLight
+            }
+        }
+        .onChange(of: appState.appAppearance) { newAppearance in
+            // 当用户在设置中切换主题模式时，同步更新终端主题
+            let shouldUseDark: Bool
+            switch newAppearance {
+            case .dark: shouldUseDark = true
+            case .light: shouldUseDark = false
+            case .system: shouldUseDark = colorScheme == .dark
+            }
             if appState.terminalTheme.isDark != shouldUseDark {
                 appState.terminalTheme = shouldUseDark ? .defaultDark : .defaultLight
             }
@@ -133,6 +148,12 @@ struct ResizableDivider: View {
     }
 }
 
+/// 面板主视图模式
+enum PanelViewMode {
+    case terminal
+    case files
+}
+
 /// 单个 AI 终端视图
 struct SingleTerminalView: View {
     let ai: AIInstance
@@ -140,8 +161,8 @@ struct SingleTerminalView: View {
     @State private var terminalOutput: String = ""
     @State private var inputText: String = ""
     @State private var isSending: Bool = false
-    @State private var isInteractiveMode: Bool = true  // 默认显示 Interactive 模式
     @State private var isConnected: Bool = false
+    @State private var panelMode: PanelViewMode = .terminal  // 终端 or 文件树
     
     // 每秒刷新的定时器
     private let autoRefreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
@@ -149,25 +170,28 @@ struct SingleTerminalView: View {
     private var theme: TerminalTheme {
         appState.terminalTheme
     }
+
+    private var isInteractiveMode: Bool {
+        appState.isTerminalInteractive(for: ai.id)
+    }
     
     var body: some View {
         VStack(spacing: 0) {
-            // 标题
+            // 标题栏
             HStack {
                 Circle()
                     .fill(ai.isActive ? .green : .gray)
                     .frame(width: 8, height: 8)
                 
                 AILogoView(aiType: ai.type, size: 14)
-                Text("\(ai.name) Terminal")
+                Text(panelMode == .terminal ? "\(ai.name) Terminal" : "\(ai.name) Files")
                     .fontWeight(.medium)
-                Spacer()
                 
-                // 模式切换按钮
-                if ai.isActive {
+                // Interactive/Snapshot 切换（紧挨标题，仅终端模式时显示）
+                if panelMode == .terminal && ai.isActive {
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
-                            isInteractiveMode.toggle()
+                            appState.setTerminalInteractive(!isInteractiveMode, for: ai.id)
                         }
                     } label: {
                         HStack(spacing: 4) {
@@ -183,26 +207,28 @@ struct SingleTerminalView: View {
                     }
                     .buttonStyle(.plain)
                     .help(isInteractiveMode ? "Switch to Snapshot mode" : "Switch to Interactive mode")
-                    
-                    // 手动刷新按钮（仅 Snapshot 模式）
-                    if !isInteractiveMode {
-                        Button {
-                            refreshOutput()
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.plain)
-                    }
                 }
+                
+                Spacer()
+                
+                // 终端/文件 分段控件（最右侧）
+                Picker("", selection: $panelMode) {
+                    Text("Terminal").tag(PanelViewMode.terminal)
+                    Text("Files").tag(PanelViewMode.files)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 140)
             }
             .padding()
             .background(Color(.windowBackgroundColor))
             
             Divider()
             
-            // 终端内容区域 - 根据模式显示不同视图
-            if isInteractiveMode && ai.isActive {
+            // 内容区域
+            if panelMode == .files {
+                // 文件树视图
+                FileTreeView(workingDirectory: ai.workingDirectory)
+            } else if isInteractiveMode && ai.isActive {
                 // Interactive 模式：xterm.js + PTY 真终端
                 XtermTerminalView(
                     command: "/opt/homebrew/bin/tmux",
@@ -212,10 +238,11 @@ struct SingleTerminalView: View {
                     onExit: { _ in
                         // 退出时自动切回 Snapshot 模式
                         withAnimation {
-                            isInteractiveMode = false
+                            appState.setTerminalInteractive(false, for: ai.id)
                         }
                     }
                 )
+                .background(theme.backgroundColor.color)
             } else {
                 // Snapshot 模式：截图式终端
                 ScrollView {
@@ -289,6 +316,15 @@ struct SingleTerminalView: View {
             } else {
                 terminalOutput = ""
             }
+        }
+        .onChange(of: ai.id) { _ in
+            // 切换 AI 时重置本地状态，避免跨实例串台
+            terminalOutput = ""
+            inputText = ""
+            isSending = false
+            isConnected = false
+            // 保持与旧行为一致：切换实例后默认回到 Interactive
+            appState.setTerminalInteractive(true, for: ai.id)
         }
     }
     
@@ -410,6 +446,7 @@ struct EmptyStateView: View {
                 .disabled(appState.aiInstances.isEmpty)
             }
         }
+        .offset(y: -40)
     }
 }
 

@@ -185,31 +185,15 @@ struct MessageBubbleView: View {
         appState.setMessageReaction(reaction, for: message.id, in: chatId)
     }
     
-    // 头像视图（带火焰效果）
+    // 头像视图
     private var avatarView: some View {
-        let flameIntensity = calculateFlameIntensity()
-        
-        return ZStack {
-            // 火焰粒子层（在头像下方）
-            if flameIntensity > 0 {
-                FlameParticleView(intensity: flameIntensity, avatarSize: 28)
-                    .offset(x: 0, y: 0)
-            }
-            
-            // AI 头像
+        Group {
             if let ai = aiInstance {
                 AILogoView(aiType: ai.type, size: 28)
                     .clipShape(Circle())
             }
         }
-        .frame(width: 68, height: 68)  // 加大框架以容纳火焰
-    }
-    
-    // 计算该 AI 的火焰强度
-    private func calculateFlameIntensity() -> Int {
-        guard let ai = aiInstance,
-              let chat = appState.selectedGroupChat else { return 0 }
-        return ai.calculateFlameIntensity(in: chat)
+        .frame(width: 28, height: 28)
     }
     
     // 消息类型标签
@@ -243,7 +227,7 @@ struct MessageBubbleView: View {
     }
     
     private var bubbleBackground: Color {
-        isUser ? Color.accentColor : Color(.controlBackgroundColor)
+        isUser ? Color.accentColor : Color.gray.opacity(0.12)
     }
     
     private var bubbleTextColor: Color {

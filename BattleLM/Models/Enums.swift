@@ -83,13 +83,23 @@ enum MessageType: String, Codable {
 enum ChatMode: String, Codable, CaseIterable, Identifiable {
     case discussion    // 讨论模式：AI 互相交流评价
     case qna           // Q&A 模式：AI 独立回答，不互相交流
+    case solo          // Solo 模式：指定单个 AI 执行
     
     var id: String { rawValue }
     
     var displayName: String {
         switch self {
-        case .discussion: return "Discussion"
-        case .qna: return "Q&A"
+        case .discussion: return "Debate"
+        case .qna: return "Poll"
+        case .solo: return "Solo"
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .discussion: return "All AIs debate in 3 rounds"
+        case .qna: return "Each AI answers once, separately"
+        case .solo: return "Send to one AI only"
         }
     }
     
@@ -97,6 +107,7 @@ enum ChatMode: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .discussion: return "bubble.left.and.bubble.right"
         case .qna: return "questionmark.bubble"
+        case .solo: return "person.fill"
         }
     }
     
@@ -105,6 +116,7 @@ enum ChatMode: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .discussion: return 3  // Round 1: 分析, Round 2: 评价, Round 3: 修正
         case .qna: return 1         // 只有 1 轮，每个 AI 独立回答
+        case .solo: return 1        // 只有 1 轮，单个 AI 执行
         }
     }
 }

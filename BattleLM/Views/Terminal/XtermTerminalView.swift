@@ -24,12 +24,18 @@ struct XtermTerminalView: NSViewRepresentable {
         config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
         
         let webView = WKWebView(frame: .zero, configuration: config)
+
+        // 避免首次加载/切换视图时的白屏闪烁：让 WKWebView 背景透明，由 SwiftUI 背景承接。
+        #if os(macOS)
+        webView.setValue(false, forKey: "drawsBackground")
+        #endif
         
         context.coordinator.webView = webView
         context.coordinator.command = command
         context.coordinator.args = args
         context.coordinator.onExit = onExit
         context.coordinator.isConnectedBinding = $isConnected
+        context.coordinator.updateTheme(theme)
         
         // 设置导航代理以检测 WebContent 崩溃
         webView.navigationDelegate = context.coordinator
@@ -66,19 +72,14 @@ struct XtermTerminalView: NSViewRepresentable {
     }
     
     func updateNSView(_ nsView: WKWebView, context: Context) {
-        // 当主题变化时，更新 xterm.js 主题
-        let themeDict: [String: String] = [
-            "background": theme.backgroundColor.hex,
-            "foreground": theme.textColor.hex,
-            "cursor": theme.promptColor.hex,
-            "selection": theme.borderColor.hex
-        ]
-        
-        if let jsonData = try? JSONSerialization.data(withJSONObject: themeDict),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            let escaped = jsonString.replacingOccurrences(of: "'", with: "\\'")
-            nsView.evaluateJavaScript("window.setTheme && window.setTheme('\(escaped)')") { _, _ in }
-        }
+        // 连接参数可能会随所选 AI 变化：更新并在需要时重启 PTY（不重建 WebView）
+        context.coordinator.updateConnection(command: command, args: args)
+
+        // 当主题变化时，更新 xterm.js 主题。
+        // 注意：首次加载 WKWebView 时，SwiftUI 可能在 `xterm.html` 初始化完成前就调用 updateNSView，
+        // 这会导致 setTheme 静默失败（表现为“灰蒙蒙”默认背景，手动切换模式后才正常）。
+        // 因此把主题缓存到 Coordinator，并在 terminalReady 时再强制应用一次。
+        context.coordinator.updateTheme(theme)
     }
     
     func makeCoordinator() -> Coordinator {
@@ -96,28 +97,75 @@ struct XtermTerminalView: NSViewRepresentable {
         private var outputBuffer = Data()
         private var flushTimer: Timer?
         private var terminalSize: (cols: Int, rows: Int) = (80, 24)
+        private var isTerminalReady: Bool = false
+        private var ptyGeneration: Int = 0
+        private var themeJson: String?
+
+        func updateTheme(_ theme: TerminalTheme) {
+            let themeDict: [String: String] = [
+                "background": theme.backgroundColor.hex,
+                "foreground": theme.textColor.hex,
+                "cursor": theme.promptColor.hex,
+                "selection": theme.borderColor.hex
+            ]
+
+            if let jsonData = try? JSONSerialization.data(withJSONObject: themeDict),
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+                themeJson = jsonString
+                applyThemeIfPossible()
+            }
+        }
+
+        private func applyThemeIfPossible() {
+            guard let webView, let themeJson else { return }
+            let escaped = themeJson.replacingOccurrences(of: "'", with: "\\'")
+            webView.evaluateJavaScript("window.setTheme && window.setTheme('\(escaped)')") { _, _ in }
+        }
+
+        func updateConnection(command: String, args: [String]) {
+            let didChange = self.command != command || self.args != args
+            self.command = command
+            self.args = args
+            guard didChange else { return }
+
+            // 先清掉旧屏幕，避免短暂显示上一个会话的内容
+            resetOutputState()
+            webView?.evaluateJavaScript("window.clearTerminal && window.clearTerminal()") { _, _ in }
+
+            isConnectedBinding?.wrappedValue = false
+
+            guard isTerminalReady else { return }
+            startPTY()
+        }
         
         func startPTY() {
+            // 重连/切换 session 时，终止旧 PTY 并重置输出状态
+            ptyGeneration += 1
+            let generation = ptyGeneration
+
+            // 先提升 generation，再终止旧连接：避免旧进程退出回调影响新连接（例如误触发 onExit）
+            ptyManager.closeConnection()
+            resetOutputState()
+
             // 设置 PTY 输出回调
             ptyManager.onOutput = { [weak self] data in
-                self?.handleOutput(data)
+                guard let self, generation == self.ptyGeneration else { return }
+                self.handleOutput(data)
             }
             
             ptyManager.onExit = { [weak self] exitCode in
-                DispatchQueue.main.async {
-                    self?.isConnectedBinding?.wrappedValue = false
-                    self?.onExit?(exitCode)
-                }
+                guard let self, generation == self.ptyGeneration else { return }
+                self.isConnectedBinding?.wrappedValue = false
+                self.onExit?(exitCode)
             }
             
             // 启动进程（使用已保存的终端尺寸）
             do {
                 try ptyManager.spawn(command: command, args: args, cols: terminalSize.cols, rows: terminalSize.rows)
-                DispatchQueue.main.async {
-                    self.isConnectedBinding?.wrappedValue = true
-                }
+                isConnectedBinding?.wrappedValue = true
             } catch {
                 print("❌ PTY spawn failed: \(error)")
+                isConnectedBinding?.wrappedValue = false
             }
         }
         
@@ -130,6 +178,12 @@ struct XtermTerminalView: NSViewRepresentable {
                     self?.flushOutput()
                 }
             }
+        }
+
+        private func resetOutputState() {
+            flushTimer?.invalidate()
+            flushTimer = nil
+            outputBuffer.removeAll()
         }
         
         private func flushOutput() {
@@ -167,11 +221,13 @@ struct XtermTerminalView: NSViewRepresentable {
                 if let json = message.body as? String,
                    let data = json.data(using: .utf8),
                    let dims = try? JSONDecoder().decode(TerminalDimensions.self, from: data) {
+                    terminalSize = (dims.cols, dims.rows)
                     ptyManager.updateWindowSize(cols: dims.cols, rows: dims.rows)
                 }
                 
             case "terminalReady":
                 // xterm.js 准备就绪，保存尺寸并启动 PTY
+                isTerminalReady = true
                 if let json = message.body as? String,
                    let data = json.data(using: .utf8),
                    let dims = try? JSONDecoder().decode(TerminalDimensions.self, from: data) {
@@ -179,6 +235,8 @@ struct XtermTerminalView: NSViewRepresentable {
                     terminalSize = (dims.cols, dims.rows)
                     print("📐 Terminal size: \(dims.cols)x\(dims.rows)")
                 }
+                // ✅ 关键：确保在 JS 初始化完成后强制应用一次主题（根治“初次灰蒙蒙”）
+                applyThemeIfPossible()
                 // PTY 启动（使用正确的尺寸）
                 print("🚀 Starting PTY with size \(terminalSize.cols)x\(terminalSize.rows)...")
                 startPTY()
@@ -192,6 +250,8 @@ struct XtermTerminalView: NSViewRepresentable {
         
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             print("✅ WebView didFinish navigation")
+            // 兜底：如果 terminalReady 事件因为某些原因没有触发（极少数情况下），也尽量应用主题。
+            applyThemeIfPossible()
         }
         
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

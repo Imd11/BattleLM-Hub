@@ -23,7 +23,7 @@ class FlameScene: SKScene {
     private var emitters: [SKEmitterNode] = []
     
     init(intensity: Int, size: CGSize) {
-        self.intensity = max(1, min(5, intensity))
+        self.intensity = max(0, min(5, intensity))
         super.init(size: size)
         self.backgroundColor = .clear
         self.scaleMode = .aspectFit

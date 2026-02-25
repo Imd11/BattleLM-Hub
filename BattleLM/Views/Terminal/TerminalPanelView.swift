@@ -6,7 +6,6 @@ import Combine
 struct TerminalPanelView: View {
     @EnvironmentObject var appState: AppState
     @State private var isExpanded: Bool = true
-    @State private var showInviteSheet: Bool = false
     
     /// 当前群聊的成员 AI
     var memberAIs: [AIInstance] {
@@ -25,15 +24,6 @@ struct TerminalPanelView: View {
                 
                 Spacer()
                 
-                // 邀请 AI 按钮
-                Button {
-                    showInviteSheet = true
-                } label: {
-                    Image(systemName: "person.badge.plus")
-                        .foregroundColor(.accentColor)
-                }
-                .buttonStyle(.plain)
-                .help("Invite more AI to this chat")
                 
                 Button {
                     withAnimation {
@@ -69,9 +59,6 @@ struct TerminalPanelView: View {
             }
         }
         .background(Color(.textBackgroundColor).opacity(0.3))
-        .sheet(isPresented: $showInviteSheet) {
-            InviteAISheet()
-        }
     }
 }
 

@@ -192,7 +192,7 @@ struct PairingQRView: View {
     
     private var connectedDevicesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Connected Devices")
+            Text("Connected Devices (\(remoteHost.connectedDevices.count))")
                 .font(.headline)
             
             ForEach(remoteHost.connectedDevices, id: \.self) { device in

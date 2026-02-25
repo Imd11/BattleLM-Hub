@@ -15,17 +15,25 @@ struct ChatTextField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
+        // NSTextField 的默认 cell 会按基线绘制，且在无边框/透明背景时看起来“偏上”；
+        // 用自定义 cell 让文本在固定高度内垂直居中，避免 1:1 输入栏视觉错位。
+        field.cell = VerticallyCenteredTextFieldCell(textCell: "")
         field.stringValue = text
         field.placeholderString = placeholder
-        field.isBordered = true
-        field.isBezeled = true
-        field.bezelStyle = .roundedBezel
-        field.focusRingType = .default
+        field.isBordered = false
+        field.isBezeled = false
+        field.focusRingType = .none
+        field.drawsBackground = false
         field.isEditable = context.environment.isEnabled
         field.isSelectable = true
         field.isEnabled = context.environment.isEnabled
         field.usesSingleLineMode = true
         field.lineBreakMode = .byTruncatingTail
+        
+        // Set fixed height
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        
         context.coordinator.ensureAttached(to: field)
         return field
     }
@@ -183,5 +191,31 @@ struct ChatTextField: NSViewRepresentable {
             setBoundText(currentText(in: sender), synchronous: true)
             onCommit?()
         }
+    }
+}
+
+/// 让 NSTextField 在固定高度中垂直居中绘制/编辑文本。
+private final class VerticallyCenteredTextFieldCell: NSTextFieldCell {
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        var result = super.drawingRect(forBounds: rect)
+        let textSize = cellSize(forBounds: rect)
+        let delta = result.height - textSize.height
+        if delta > 0 {
+            result.origin.y += delta / 2
+            result.size.height -= delta
+        }
+        return result
+    }
+
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        drawingRect(forBounds: rect)
+    }
+
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: drawingRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, event: event)
+    }
+
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText, delegate: Any?, start selStart: Int, length selLength: Int) {
+        super.select(withFrame: drawingRect(forBounds: rect), in: controlView, editor: textObj, delegate: delegate, start: selStart, length: selLength)
     }
 }

@@ -120,6 +120,9 @@ extension AIInstance {
         // 4. 映射到火焰等级 (0-5): F = floor(C / 2)
         let flameLevel = Int(combinedScore / 2.0)
         
+        // 调试日志
+        print("🔥 [\(self.name)] likes=\(likes) dislikes=\(dislikes) U=\(userScore) P=\(peerScore) C=\(combinedScore) flame=\(flameLevel)")
+        
         return min(max(flameLevel, 0), 5)
     }
 }

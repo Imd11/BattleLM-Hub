@@ -4,8 +4,21 @@ import SwiftUI
 /// Sidebar View
 struct SidebarView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var remoteHost = RemoteHostServer.shared
     @State private var addAIHovered: Bool = false
     @State private var createGroupHovered: Bool = false
+
+    private var pairingHelpText: String {
+        let count = remoteHost.connectedDevices.count
+        switch count {
+        case 0:
+            return "Device Pairing"
+        case 1:
+            return "1 iOS device connected"
+        default:
+            return "\(count) iOS devices connected"
+        }
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -29,18 +42,13 @@ struct SidebarView: View {
                 // AI instances section
                 Section("AI Instances") {
                     ForEach(appState.aiInstances) { ai in
-                        AIInstanceRow(ai: ai, isSelected: appState.selectedAIId == ai.id)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                appState.selectAI(ai)
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    deleteAI(ai)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
+                        AIInstanceRow(ai: ai, isSelected: appState.selectedAIId == ai.id) {
+                            deleteAI(ai)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            appState.selectAI(ai)
+                        }
                     }
                     
                     Button {
@@ -65,12 +73,14 @@ struct SidebarView: View {
                 // Group chats section
                 Section("Group Chats") {
                     ForEach(appState.groupChats) { chat in
-                        GroupChatRow(chat: chat, isSelected: appState.selectedGroupChatId == chat.id)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                appState.selectedGroupChatId = chat.id
-                                appState.selectedAIId = nil  // Clear AI selection
-                            }
+                        GroupChatRow(chat: chat, isSelected: appState.selectedGroupChatId == chat.id) {
+                            appState.removeGroupChat(chat)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            appState.selectedGroupChatId = chat.id
+                            appState.selectedAIId = nil  // Clear AI selection
+                        }
                     }
                     
                     Button {
@@ -97,37 +107,20 @@ struct SidebarView: View {
             Divider()
             
             // Bottom settings
-            HStack(spacing: 12) {
-                Button {
+            HStack(spacing: 4) {
+                SidebarIconButton(icon: "gearshape.fill", help: "Settings (⌘,)") {
                     appState.showSettingsSheet = true
-                } label: {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 16))
                 }
-                .buttonStyle(.plain)
-                .help("Settings (⌘,)")
                 
-                Button {
+                SidebarIconButton(icon: "iphone.radiowaves.left.and.right", help: pairingHelpText, showFastHoverHelp: true) {
                     appState.showPairingSheet = true
-                } label: {
-                    Image(systemName: "iphone.radiowaves.left.and.right")
-                        .font(.system(size: 16))
                 }
-                .buttonStyle(.plain)
-                .help("Device Pairing")
                 
-                Button {
+                SidebarIconButton(customImage: "DiscordLogo", help: "Join our Discord") {
                     if let url = URL(string: "https://discord.gg/4tnTSg3ZGy") {
                         NSWorkspace.shared.open(url)
                     }
-                } label: {
-                    Image("DiscordLogo")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 16, height: 16)
                 }
-                .buttonStyle(.plain)
-                .help("Join our Discord")
                 
                 Spacer()
             }
@@ -155,6 +148,7 @@ struct SidebarView: View {
 struct AIInstanceRow: View {
     let ai: AIInstance
     var isSelected: Bool = false
+    let onDelete: () -> Void
     @State private var isHovered: Bool = false
     @ObservedObject private var sessionManager = SessionManager.shared
 
@@ -195,6 +189,27 @@ struct AIInstanceRow: View {
                     .background(Color.red.opacity(0.2))
                     .cornerRadius(4)
             }
+            
+            // Three-dots menu (visible on hover)
+            Menu {
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 24, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color.white.opacity(0.1))
+                    )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .opacity(isHovered ? 1 : 0)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
@@ -202,6 +217,7 @@ struct AIInstanceRow: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(isSelected ? Color.accentColor.opacity(0.15) : (isHovered ? Color.primary.opacity(0.08) : Color.clear))
         )
+        .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
         }
@@ -212,6 +228,7 @@ struct AIInstanceRow: View {
 struct GroupChatRow: View {
     let chat: GroupChat
     var isSelected: Bool = false
+    let onDelete: () -> Void
     @EnvironmentObject var appState: AppState
     @State private var isHovered: Bool = false
     
@@ -252,6 +269,23 @@ struct GroupChatRow: View {
             }
             
             Spacer()
+            
+            // Three-dots menu (visible on hover)
+            Menu {
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .frame(width: 20, height: 20)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .opacity(isHovered ? 1 : 0)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
@@ -269,4 +303,91 @@ struct GroupChatRow: View {
     SidebarView()
         .environmentObject(AppState())
         .frame(width: 250)
+}
+
+/// Sidebar 底部图标按钮 - 带 hover 效果
+private struct SidebarIconButton: View {
+    var icon: String? = nil
+    var customImage: String? = nil
+    let help: String
+    var showFastHoverHelp: Bool = false
+    let action: () -> Void
+    
+    @State private var isHovered = false
+    @State private var showQuickHelp = false
+    @State private var quickHelpWorkItem: DispatchWorkItem?
+    
+    var body: some View {
+        Button(action: action) {
+            Group {
+                if let icon = icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 14))
+                } else if let customImage = customImage {
+                    Image(customImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 14, height: 14)
+                }
+            }
+            .frame(width: 28, height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+            handleHoverChange(hovering)
+        }
+        .onDisappear {
+            quickHelpWorkItem?.cancel()
+        }
+        .help(help)
+        .overlay(alignment: .top) {
+            if showFastHoverHelp && showQuickHelp {
+                Text(help)
+                    .font(.caption2)
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(.controlBackgroundColor))
+                            .shadow(color: .black.opacity(0.16), radius: 6, y: 2)
+                    )
+                    .offset(y: -34)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func handleHoverChange(_ hovering: Bool) {
+        quickHelpWorkItem?.cancel()
+
+        guard showFastHoverHelp else {
+            if showQuickHelp {
+                withAnimation(.easeOut(duration: 0.08)) {
+                    showQuickHelp = false
+                }
+            }
+            return
+        }
+
+        if hovering {
+            let work = DispatchWorkItem {
+                withAnimation(.easeOut(duration: 0.12)) {
+                    showQuickHelp = true
+                }
+            }
+            quickHelpWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        } else {
+            withAnimation(.easeOut(duration: 0.08)) {
+                showQuickHelp = false
+            }
+        }
+    }
 }

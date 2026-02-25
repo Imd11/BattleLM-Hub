@@ -14,6 +14,8 @@ struct AIChatView: View {
     @State private var pendingScrollToMessageId: UUID? = nil
     @State private var focusRequestId: UUID? = nil
     @State private var isSubmittingTerminalChoice: Bool = false
+    
+    private let inputControlHeight: CGFloat = 30
 
     private var currentAI: AIInstance {
         appState.aiInstance(for: ai.id) ?? ai
@@ -88,20 +90,19 @@ struct AIChatView: View {
                         LazyVStack(spacing: 12) {
                             if messages.isEmpty {
                                 // 空状态
-                                VStack(spacing: 16) {
-                                    AILogoView(aiType: currentAI.type, size: 48)
+                                VStack(spacing: 20) {
+                                    AILogoView(aiType: currentAI.type, size: 80)
                                         .opacity(0.5)
                                     
                                     Text("Start a conversation with \(currentAI.name)")
-                                        .font(.headline)
-                                        .foregroundColor(.secondary)
+                                        .font(.title)
+                                        .fontWeight(.medium)
                                     
                                     Text("Working directory: \(currentAI.workingDirectory)")
-                                        .font(.caption)
                                         .foregroundColor(.secondary)
                                 }
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .padding(.top, 100)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: geometry.size.height)
                             } else {
                                 ForEach(messages) { message in
                                     AIChatBubbleView(message: message, ai: currentAI, containerWidth: geometry.size.width)
@@ -159,6 +160,10 @@ struct AIChatView: View {
                     }
                 }
             }
+            .contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded { _ in
+                clearInputFocus()
+            })
 
             if let prompt = terminalChoicePrompt {
                 TerminalChoicePromptCard(
@@ -192,7 +197,13 @@ struct AIChatView: View {
             Divider()
             
             // 输入区域
-            HStack(spacing: 12) {
+            HStack(alignment: .center, spacing: 8) {
+                // 快捷指令按钮
+                SlashCommandMenu(ai: currentAI) { command in
+                    handleSlashCommand(command)
+                }
+                .frame(width: inputControlHeight, height: inputControlHeight, alignment: .center)
+                
                 ChatTextField(
                     placeholder: "Ask \(currentAI.name) something...",
                     text: $inputText,
@@ -202,6 +213,7 @@ struct AIChatView: View {
                         sendMessage()
                     }
                 )
+                .frame(height: inputControlHeight)
                 // 允许在会话启动期间先输入；发送会自动启动会话
                 .disabled(isLoading)
                 
@@ -209,8 +221,10 @@ struct AIChatView: View {
                     sendMessage()
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(Color(hex: "#A3390E"))
                 }
+                .frame(width: inputControlHeight, height: inputControlHeight, alignment: .center)
                 .disabled(isLoading || isAwaitingTerminalChoice || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .buttonStyle(.plain)
             }
@@ -232,6 +246,22 @@ struct AIChatView: View {
         }
     }
     
+    private func clearInputFocus() {
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+    
+    private func handleSlashCommand(_ command: String) {
+        switch command {
+        case "/clear":
+            appState.clearMessages(for: currentAI.id)
+            
+        default:
+            // 其余 slash command 交给终端执行（例如 /status /model /stats）
+            inputText = command
+            sendMessage()
+        }
+    }
+    
     private func sendMessage() {
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !isLoading, !trimmed.isEmpty else { return }
@@ -240,6 +270,7 @@ struct AIChatView: View {
         guard !isAwaitingTerminalChoice else { return }
 
         let question = trimmed
+        let isTerminalCommand = question.hasPrefix("/")
 
         isLoading = true
         streamingMessageId = nil
@@ -251,6 +282,7 @@ struct AIChatView: View {
                 if !hasSession {
                     try await sessionManager.startSession(for: currentAI)
                     appState.setAIActive(true, for: currentAI.id)
+                    appState.setTerminalInteractive(true, for: currentAI.id)
                 }
 
                 // 某些 CLI（尤其 Claude）会在启动/执行工具前弹出需要用户选择的提示；
@@ -264,7 +296,6 @@ struct AIChatView: View {
                 }
 
                 await MainActor.run {
-                    // 添加用户消息
                     let userMessage = Message(
                         senderId: UUID(),
                         senderType: .user,
@@ -274,14 +305,38 @@ struct AIChatView: View {
                     )
                     appState.appendMessage(userMessage, to: currentAI.id)
                     pendingScrollToMessageId = userMessage.id
-
-                    // 只有在确定可以发送时才清空输入框
                     inputText = ""
+                }
+
+                // 终端控制指令（/status /model /stats ...）：
+                // - 不进入“等待 AI 回复”的 streaming 状态机（否则容易长期转圈并触发 busy）
+                // - 尝试把终端打印的结果回显到聊天区（尤其是 /status 这类状态面板）
+                if isTerminalCommand {
+                    try await sessionManager.sendTerminalCommand(question, to: currentAI)
+                    let output = try await sessionManager.captureTerminalCommandOutput(for: currentAI, command: question)
+
+                    await MainActor.run {
+                        isLoading = false
+                        streamingMessageId = nil
+
+                        if let output, !output.isEmpty {
+                            // 终端控制指令输出（例如 /status）来自“该 AI 的终端”，
+                            // 在 1:1 聊天中希望显示 AI 头像而非居中系统提示。
+                            let terminalPanelMessage = Message(
+                                senderId: currentAI.id,
+                                senderType: .ai,
+                                senderName: currentAI.name,
+                                content: output,
+                                messageType: .system
+                            )
+                            appState.appendMessage(terminalPanelMessage, to: currentAI.id)
+                        }
+                    }
+                    return
                 }
 
                 await MessageRouter.shared.sendWithStreaming(question, to: currentAI) { content, _, isComplete in
                     DispatchQueue.main.async {
-                        // 只要第一次拿到非空内容，才创建 AI 气泡；在此之前只显示“三点跳动”
                         if streamingMessageId == nil && !content.isEmpty {
                             let aiMessage = Message(
                                 senderId: currentAI.id,
@@ -354,6 +409,7 @@ struct AIChatView: View {
                     // 启动会话
                     try await sessionManager.startSession(for: aiSnapshot)
                     appState.setAIActive(true, for: aiSnapshot.id)
+                    appState.setTerminalInteractive(true, for: aiSnapshot.id)
                     let systemMessage = Message.systemMessage("🟢 \(aiSnapshot.name) session started in \(aiSnapshot.shortPath)")
                     appState.appendMessage(systemMessage, to: aiSnapshot.id)
                 }
@@ -379,55 +435,101 @@ struct AIChatBubbleView: View {
         containerWidth * 0.7
     }
     
+    @ViewBuilder
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // 左侧空白（10%）
-            Spacer()
-                .frame(width: containerWidth * 0.10)
-            
-            // 用户消息：左边额外空白推向右边
-            if isUser {
+        if message.senderType == .system {
+            HStack {
                 Spacer()
-            }
-            
-            // AI 头像
-            if !isUser, let ai = ai {
-                AILogoView(aiType: ai.type, size: 28)
-            }
-            
-            VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
                 Text(message.content)
-                    .padding(12)
-                    .background(isUser ? Color.accentColor : Color(.controlBackgroundColor))
-                    .foregroundColor(isUser ? .white : .primary)
-                    .cornerRadius(16)
-                
-                Text(message.timestamp, style: .time)
-                    .font(.caption2)
+                    .font(.system(.caption, design: .monospaced))
                     .foregroundColor(.secondary)
-            }
-            .frame(maxWidth: maxBubbleWidth, alignment: isUser ? .trailing : .leading)
-            
-            // AI 消息：右边额外空白
-            if !isUser {
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.gray.opacity(0.2))
+                    .cornerRadius(10)
+                    .frame(maxWidth: maxBubbleWidth, alignment: .center)
                 Spacer()
             }
-            
-            // 用户头像
-            if isUser {
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 32, height: 32)
-                    .overlay(
-                        Image(systemName: "person.fill")
-                            .font(.caption)
-                            .foregroundColor(.white)
-                    )
+        } else if message.messageType == .system {
+            // 来自 AI 的“终端面板输出”（例如 /status），需要显示 AI 头像并保持等宽排版。
+            HStack(alignment: .top, spacing: 12) {
+                Spacer()
+                    .frame(width: containerWidth * 0.10)
+
+                if let ai = ai {
+                    AILogoView(aiType: ai.type, size: 28)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(message.content)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(12)
+                        .background(Color.gray.opacity(0.12))
+                        .foregroundColor(.primary)
+                        .cornerRadius(12)
+
+                    Text(message.timestamp, style: .time)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: maxBubbleWidth, alignment: .leading)
+
+                Spacer()
+                Spacer()
+                    .frame(width: containerWidth * 0.10)
             }
-            
-            // 右侧空白（10%）
-            Spacer()
-                .frame(width: containerWidth * 0.10)
+        } else {
+            HStack(alignment: .top, spacing: 12) {
+                // 左侧空白（10%）
+                Spacer()
+                    .frame(width: containerWidth * 0.10)
+                
+                // 用户消息：左边额外空白推向右边
+                if isUser {
+                    Spacer()
+                }
+                
+                // AI 头像
+                if !isUser, let ai = ai {
+                    AILogoView(aiType: ai.type, size: 28)
+                }
+                
+                VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
+                    Text(message.content)
+                        .padding(12)
+                        .background(isUser ? Color.accentColor : Color.gray.opacity(0.12))
+                        .foregroundColor(isUser ? .white : .primary)
+                        .cornerRadius(16)
+                    
+                    Text(message.timestamp, style: .time)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: maxBubbleWidth, alignment: isUser ? .trailing : .leading)
+                
+                // AI 消息：右边额外空白
+                if !isUser {
+                    Spacer()
+                }
+                
+                // 用户头像
+                if isUser {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 32, height: 32)
+                        .overlay(
+                            Image(systemName: "person.fill")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        )
+                }
+                
+                // 右侧空白（10%）
+                Spacer()
+                    .frame(width: containerWidth * 0.10)
+            }
         }
     }
 }

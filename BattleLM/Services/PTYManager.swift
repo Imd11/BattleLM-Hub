@@ -42,6 +42,10 @@ class PTYManager {
         masterHandle = FileHandle(fileDescriptor: master, closeOnDealloc: true)
         slaveHandle = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
         
+        // 捕获回调，避免在多次 spawn/重连时串线
+        let outputCallback = onOutput
+        let exitCallback = onExit
+
         // 使用 Process 启动命令
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: command)
@@ -63,9 +67,9 @@ class PTYManager {
         proc.standardError = slaveHandle
         
         // 退出回调
-        proc.terminationHandler = { [weak self] process in
+        proc.terminationHandler = { process in
             DispatchQueue.main.async {
-                self?.onExit?(process.terminationStatus)
+                exitCallback?(process.terminationStatus)
             }
         }
         
@@ -77,7 +81,7 @@ class PTYManager {
         Darwin.close(slave)
         
         // 设置读取监听
-        setupReadHandler()
+        setupReadHandler(outputCallback)
     }
     
     /// 写入数据到 PTY
@@ -113,6 +117,7 @@ class PTYManager {
     
     /// 关闭 PTY
     func closeConnection() {
+        masterHandle?.readabilityHandler = nil
         masterHandle = nil
         slaveHandle = nil
         masterFd = -1
@@ -125,15 +130,15 @@ class PTYManager {
     
     // MARK: - Private
     
-    private func setupReadHandler() {
+    private func setupReadHandler(_ outputCallback: ((Data) -> Void)?) {
         guard let handle = masterHandle else { return }
         
         // 使用 readabilityHandler 监听输出
-        handle.readabilityHandler = { [weak self] fileHandle in
+        handle.readabilityHandler = { fileHandle in
             let data = fileHandle.availableData
             if !data.isEmpty {
                 DispatchQueue.main.async {
-                    self?.onOutput?(data)
+                    outputCallback?(data)
                 }
             }
         }

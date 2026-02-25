@@ -19,8 +19,8 @@ struct BattleLMApp: App {
         .commands {
             SidebarCommands()
             
-            // 文件菜单
-            CommandGroup(after: .newItem) {
+            // 文件菜单 - 替换默认的 New 命令
+            CommandGroup(replacing: .newItem) {
                 Button("New AI Instance") {
                     appState.showAddAISheet = true
                 }

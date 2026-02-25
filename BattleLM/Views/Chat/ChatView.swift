@@ -6,6 +6,7 @@ struct ChatView: View {
     @EnvironmentObject var appState: AppState
     @State private var inputText: String = ""
     @State private var selectedMode: ChatMode = .discussion
+    @State private var soloTargetAIId: UUID? = nil
     
     var chat: GroupChat? {
         appState.selectedGroupChat
@@ -24,7 +25,11 @@ struct ChatView: View {
             Divider()
             
             // 输入框（带模式选择器）
-            MessageInputView(inputText: $inputText, selectedMode: $selectedMode) {
+            MessageInputView(
+                inputText: $inputText,
+                selectedMode: $selectedMode,
+                soloTargetAIId: $soloTargetAIId
+            ) {
                 sendMessage()
             }
         }
@@ -40,7 +45,7 @@ struct ChatView: View {
             return
         }
         
-        appState.sendUserMessage(inputText, to: chat.id)
+        appState.sendUserMessage(inputText, to: chat.id, soloTargetAIId: soloTargetAIId)
         inputText = ""
     }
     
@@ -55,6 +60,7 @@ struct ChatView: View {
 /// 聊天顶栏
 struct ChatHeaderView: View {
     @EnvironmentObject var appState: AppState
+    @ObservedObject private var discussionManager = DiscussionManager.shared
     
     var chat: GroupChat? {
         appState.selectedGroupChat
@@ -118,6 +124,27 @@ struct ChatHeaderView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
+                    // Stop 按钮（仅在讨论进行中显示）
+                    if discussionManager.isProcessing {
+                        Button {
+                            discussionManager.cancelDiscussion()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "stop.fill")
+                                    .font(.system(size: 9))
+                                Text("Stop")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.red.opacity(0.2))
+                            .foregroundColor(.red)
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    
                     // 活跃 AI 数量
                     let activeCount = chat.memberIds.filter { id in
                         appState.aiInstance(for: id)?.isEliminated == false
@@ -133,18 +160,6 @@ struct ChatHeaderView: View {
                 }
             }
             
-            // 终端切换按钮
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    appState.showTerminalPanel.toggle()
-                }
-            } label: {
-                Image(systemName: appState.showTerminalPanel ? "rectangle.righthalf.inset.filled" : "rectangle.righthalf.inset.filled.arrow.right")
-                    .font(.title2)
-                    .foregroundColor(.primary)
-            }
-            .buttonStyle(.plain)
-            .help(appState.showTerminalPanel ? "Hide Terminal (⌘T)" : "Show Terminal (⌘T)")
         }
         .padding()
         .background(Color(.windowBackgroundColor))

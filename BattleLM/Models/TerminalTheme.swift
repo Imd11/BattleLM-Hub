@@ -42,7 +42,7 @@ extension TerminalTheme {
     
     /// 暗色主题
     static let darkThemes: [TerminalTheme] = [
-        .oneDarkPro, .dracula, .nightOwl, .githubDark, .monokai,
+        .pitchBlack, .oneDarkPro, .dracula, .nightOwl, .githubDark, .monokai,
         .catppuccinMocha, .tokyoNight, .ayuDark, .synthwave84,
         .solarizedDark, .gruvboxDark, .nord
     ]
@@ -65,13 +65,22 @@ extension TerminalTheme {
     }
     
     /// 暗色默认
-    static let defaultDark = oneDarkPro
+    static let defaultDark = pitchBlack
     /// 亮色默认
     static let defaultLight = githubLight
     /// 默认主题
-    static let `default` = oneDarkPro
+    static let `default` = pitchBlack
     
     // MARK: - Dark Themes
+    
+    static let pitchBlack = TerminalTheme(
+        id: "pitch-black", name: "Pitch Black", isDark: true,
+        backgroundColor: ColorHex("#000000"), textColor: ColorHex("#D4D4D4"),
+        promptColor: ColorHex("#569CD6"), responseColor: ColorHex("#6A9955"),
+        borderColor: ColorHex("#333333"), errorColor: ColorHex("#F44747"),
+        warningColor: ColorHex("#CCA700"), successColor: ColorHex("#4EC9B0"),
+        commentColor: ColorHex("#6A737D")
+    )
     
     static let oneDarkPro = TerminalTheme(
         id: "one-dark-pro", name: "One Dark Pro", isDark: true,

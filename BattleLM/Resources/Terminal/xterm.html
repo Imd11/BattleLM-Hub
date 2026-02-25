@@ -51,7 +51,42 @@
         const fitAddon = new FitAddon.FitAddon();
         term.loadAddon(fitAddon);
         term.open(document.getElementById('terminal'));
-        fitAddon.fit();
+        const terminalEl = document.getElementById('terminal');
+
+        let lastDims = null;
+        let resizeTimer = null;
+        let readySent = false;
+
+        function postDims(handlerName, dims) {
+            try {
+                window.webkit?.messageHandlers?.[handlerName]?.postMessage(JSON.stringify(dims));
+            } catch (_) { }
+        }
+
+        function fitAndNotify() {
+            try { fitAddon.fit(); } catch (_) { }
+
+            const dims = { cols: term.cols, rows: term.rows };
+            if (!dims.cols || !dims.rows) return;
+
+            if (!readySent) {
+                readySent = true;
+                postDims('terminalReady', dims);
+            }
+
+            if (!lastDims || lastDims.cols !== dims.cols || lastDims.rows !== dims.rows) {
+                lastDims = dims;
+                postDims('terminalResize', dims);
+            }
+        }
+
+        function scheduleFit() {
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                resizeTimer = null;
+                fitAndNotify();
+            }, 50);
+        }
 
         // 避免 WKWebView/xterm 初始化时抢占整个窗口焦点：
         // 让聊天输入框在新建实例/切换视图后仍可立即点击输入。
@@ -67,11 +102,18 @@
         
         // 窗口大小变化时重新适配
         window.addEventListener('resize', () => {
-            fitAddon.fit();
-            // 通知 Swift 新的尺寸
-            const dims = { cols: term.cols, rows: term.rows };
-            window.webkit?.messageHandlers?.terminalResize?.postMessage(JSON.stringify(dims));
+            scheduleFit();
         });
+
+        // SwiftUI 分栏/视图切换时，容器尺寸变化不一定触发 window.resize；
+        // 使用 ResizeObserver 监控 #terminal 自身尺寸变化，确保 cols/rows 始终准确。
+        try {
+            const ro = new ResizeObserver(() => scheduleFit());
+            ro.observe(terminalEl);
+        } catch (_) { }
+
+        // 初次布局完成后再 fit，避免在 0x0 或未完成布局时得到错误的 cols/rows
+        requestAnimationFrame(() => scheduleFit());
         
         // 用户输入 → 发送到 Swift
         term.onData(data => {
@@ -104,25 +146,43 @@
         window.setTheme = function(themeJson) {
             try {
                 const theme = JSON.parse(themeJson);
-                term.options.theme = {
+                const nextTheme = {
                     background: theme.background || '#1e1e1e',
                     foreground: theme.foreground || '#d4d4d4',
                     cursor: theme.cursor || '#aeafad',
                     cursorAccent: theme.cursorAccent || '#000000',
                     selectionBackground: theme.selection || '#264f78'
                 };
-                // 更新背景色
-                document.body.style.background = theme.background || '#1e1e1e';
+
+                // 兼容不同 xterm 版本：有的版本存在 setOption，有的只支持直接写 term.options。
+                try { term.options.theme = nextTheme; } catch (_) { }
+                if (typeof term.setOption === 'function') {
+                    try { term.setOption('theme', nextTheme); } catch (_) { }
+                }
+
+                // 让 HTML/CSS 背景也跟随（xterm 之外的空白区域、以及透明 WebView 下的承接区域）
+                try {
+                    document.documentElement.style.background = nextTheme.background || '#1e1e1e';
+                    document.body.style.background = nextTheme.background || '#1e1e1e';
+                    const terminalEl = document.getElementById('terminal');
+                    if (terminalEl) terminalEl.style.background = nextTheme.background || '#1e1e1e';
+                    const viewports = document.getElementsByClassName('xterm-viewport');
+                    for (let i = 0; i < viewports.length; i++) {
+                        viewports[i].style.backgroundColor = nextTheme.background || '#1e1e1e';
+                    }
+                } catch (_) { }
+
+                // 强制刷新可视区域，确保切换主题后立即重绘
+                try { term.refresh(0, term.rows - 1); } catch (_) { }
             } catch (e) {
                 console.error('Failed to set theme:', e);
             }
         };
-        
-        // 初始化完成，通知 Swift
+
+        // 兜底：极端情况下（ResizeObserver 不可用等）仍保证会发送 ready
         setTimeout(() => {
-            const dims = { cols: term.cols, rows: term.rows };
-            window.webkit?.messageHandlers?.terminalReady?.postMessage(JSON.stringify(dims));
-        }, 100);
+            if (!readySent) fitAndNotify();
+        }, 300);
     </script>
 </body>
 

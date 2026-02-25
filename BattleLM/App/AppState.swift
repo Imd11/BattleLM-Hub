@@ -26,6 +26,11 @@ class AppState: ObservableObject {
     
     /// 终端主题
     @Published var terminalTheme: TerminalTheme = .default
+
+    /// 1:1 终端显示模式（Interactive vs Snapshot），按 AI 实例保存。
+    /// - 默认：Interactive（true）
+    /// - 备注：使用字典而非 @State，避免在切换不同 AI 时状态串用。
+    @Published var terminalIsInteractiveByAIId: [UUID: Bool] = [:]
     
     /// 终端位置
     @Published var terminalPosition: TerminalPosition = .right
@@ -68,6 +73,14 @@ class AppState: ObservableObject {
     
     init() {
         // 启动时为空，不加载示例数据
+    }
+
+    func isTerminalInteractive(for aiId: UUID) -> Bool {
+        terminalIsInteractiveByAIId[aiId] ?? true
+    }
+
+    func setTerminalInteractive(_ isInteractive: Bool, for aiId: UUID) {
+        terminalIsInteractiveByAIId[aiId] = isInteractive
     }
 
     /// 启动时预热：并行检测所有 AI CLI 状态，避免用户在 Add AI Sheet 中点击卡片时才卡顿等待。
@@ -183,6 +196,13 @@ class AppState: ObservableObject {
         }
     }
     
+    /// 清空 AI 实例的聊天记录
+    func clearMessages(for aiId: UUID) {
+        updateAIInstance(aiId) { ai in
+            ai.messages.removeAll()
+        }
+    }
+    
     /// 更新 AI 消息内容（用于流式输出）
     func updateMessage(_ messageId: UUID, content: String, aiId: UUID) {
         updateAIInstance(aiId) { ai in
@@ -209,15 +229,33 @@ class AppState: ObservableObject {
     // MARK: - Group Chat Methods
     
     /// 创建群聊
-    func createGroupChat(name: String, memberIds: [UUID]) {
+    @discardableResult
+    func createGroupChat(name: String, memberIds: [UUID]) -> UUID {
         var chat = GroupChat(name: name, memberIds: memberIds)
         chat.isActive = true
         groupChats.append(chat)
         selectedGroupChatId = chat.id
+        selectedAIId = nil
+        return chat.id
+    }
+    
+    /// 删除群聊
+    func removeGroupChat(_ chat: GroupChat) {
+        groupChats.removeAll { $0.id == chat.id }
+        // If the deleted chat was selected, clear selection
+        if selectedGroupChatId == chat.id {
+            selectedGroupChatId = nil
+        }
+    }
+
+    @MainActor
+    func appendSystemMessage(_ content: String, to chatId: UUID) {
+        guard let index = groupChats.firstIndex(where: { $0.id == chatId }) else { return }
+        groupChats[index].messages.append(Message.systemMessage(content))
     }
     
     /// 发送用户消息到群聊
-    func sendUserMessage(_ content: String, to chatId: UUID) {
+    func sendUserMessage(_ content: String, to chatId: UUID, soloTargetAIId: UUID? = nil) {
         guard let index = groupChats.firstIndex(where: { $0.id == chatId }) else { return }
         
         let message = Message.userMessage(content)
@@ -244,6 +282,22 @@ class AppState: ObservableObject {
             
             Task {
                 await startQnA(content, chatId: chatId, members: members)
+            }
+            
+        case .solo:
+            // Solo 模式：只发给指定 AI
+            guard let targetId = soloTargetAIId,
+                  let targetAI = aiInstances.first(where: { $0.id == targetId }) else {
+                let errorMsg = Message.systemMessage("⚠️ No AI selected for Solo mode.")
+                groupChats[index].messages.append(errorMsg)
+                return
+            }
+            
+            let soloMsg = Message.systemMessage("🎯 Sending to \(targetAI.name)...")
+            groupChats[index].messages.append(soloMsg)
+            
+            Task {
+                await startSolo(content, chatId: chatId, targetAI: targetAI)
             }
         }
     }
@@ -388,9 +442,9 @@ class AppState: ObservableObject {
                     
                     guard let idx = self.groupChats.firstIndex(where: { $0.id == chatId }) else { return }
                     
-                    // 查找或创建该 AI 的消息
+                    // 只更新当前仍在 streaming 的消息，避免覆盖历史已完成气泡
                     if let msgIdx = self.groupChats[idx].messages.lastIndex(where: {
-                        $0.senderId == ai.id && $0.senderType == .ai
+                        $0.senderId == ai.id && $0.senderType == .ai && $0.isStreaming
                     }) {
                         // 更新现有消息
                         self.groupChats[idx].messages[msgIdx].content = response
@@ -419,6 +473,58 @@ class AppState: ObservableObject {
         guard let idx = groupChats.firstIndex(where: { $0.id == chatId }) else { return }
         let completeMsg = Message.systemMessage("✅ All AIs have responded.")
         groupChats[idx].messages.append(completeMsg)
+    }
+    
+    /// 启动 Solo 模式 — 向单个指定 AI 发送消息
+    @MainActor
+    private func startSolo(_ question: String, chatId: UUID, targetAI: AIInstance) async {
+        guard let index = groupChats.firstIndex(where: { $0.id == chatId }) else { return }
+        
+        // 确保 AI 会话已启动
+        if !targetAI.isActive {
+            if let aiIndex = aiInstances.firstIndex(where: { $0.id == targetAI.id }) {
+                do {
+                    try await SessionManager.shared.startSession(for: aiInstances[aiIndex])
+                    setAIActive(true, for: targetAI.id)
+                } catch {
+                    print("❌ Failed to start session for \(targetAI.name): \(error)")
+                    let errorMsg = Message.systemMessage("⚠️ Failed to start \(targetAI.name)")
+                    groupChats[index].messages.append(errorMsg)
+                    return
+                }
+            }
+        }
+        
+        // 发送并流式获取响应
+        do {
+            try await SessionManager.shared.sendMessage(question, to: targetAI)
+            
+            try await SessionManager.shared.streamResponse(from: targetAI) { [weak self] response, isThinking, isComplete in
+                guard let self = self else { return }
+                guard let idx = self.groupChats.firstIndex(where: { $0.id == chatId }) else { return }
+                
+                if let msgIdx = self.groupChats[idx].messages.lastIndex(where: {
+                    $0.senderId == targetAI.id && $0.senderType == .ai && $0.isStreaming
+                }) {
+                    self.groupChats[idx].messages[msgIdx].content = response
+                    self.groupChats[idx].messages[msgIdx].isStreaming = !isComplete
+                } else {
+                    var message = Message(
+                        senderId: targetAI.id,
+                        senderType: .ai,
+                        senderName: targetAI.name,
+                        content: response.isEmpty ? "Thinking..." : response,
+                        messageType: .analysis
+                    )
+                    message.isStreaming = !isComplete
+                    self.groupChats[idx].messages.append(message)
+                }
+            }
+        } catch {
+            print("❌ Solo error for \(targetAI.name): \(error)")
+            let errorMsg = Message.systemMessage("⚠️ \(targetAI.name) failed to respond")
+            groupChats[index].messages.append(errorMsg)
+        }
     }
     
     /// 模拟 AI 响应（测试用）
@@ -472,6 +578,7 @@ class AppState: ObservableObject {
     func selectAI(_ ai: AIInstance) {
         selectedAIId = ai.id
         selectedGroupChatId = nil  // 清除群聊选择
+        showTerminalPanel = false  // 1:1 模式默认折叠终端面板
     }
     
     /// 发送消息给单个 AI

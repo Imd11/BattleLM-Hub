@@ -1,8 +1,7 @@
 import Foundation
 import Combine
 
-/// 管理 cloudflared Quick Tunnel（免费临时隧道）
-/// 每个用户运行时会获得自己独立的 trycloudflare.com 临时地址
+/// 管理 cloudflared Tunnel（支持 Named Tunnel 和 Quick Tunnel）
 @MainActor
 class CloudflaredManager: ObservableObject {
     static let shared = CloudflaredManager()
@@ -13,6 +12,10 @@ class CloudflaredManager: ObservableObject {
     
     private var process: Process?
     private var outputPipe: Pipe?
+    
+    // Named Tunnel 配置
+    private let namedTunnelToken = "eyJhIjoiZDliY2ExNmE2ZDdjMjQ0NGNiYTJlMTlhYWIwYTBjYjMiLCJ0IjoiZjVkMTMwYjAtZDljNC00MDZhLTk3NzUtZWNlOTZmODllY2ZhIiwicyI6IlptTmhNMlk0WW1RdFpUZGxOUzAwWkRjeExXSTBPR1V0TjJSak5XVmpaR1ZpWVRJdyJ9"
+    private let namedTunnelDomain = "wss://remote.aixien.com"
     
     private init() {}
     
@@ -32,8 +35,46 @@ class CloudflaredManager: ObservableObject {
         return nil
     }
     
-    /// Start Quick Tunnel (每个用户获得独立的临时地址)
-    func startTunnel(localPort: Int) async throws -> String {
+    /// 启动 Named Tunnel（稳定连接，推荐使用）
+    func startNamedTunnel() async throws -> String {
+        guard let path = cloudflaredPath else {
+            throw CloudflaredError.notInstalled
+        }
+        
+        // 停止现有进程
+        stop()
+        
+        isRunning = false
+        tunnelURL = nil
+        error = nil
+        
+        process = Process()
+        process?.executableURL = URL(fileURLWithPath: path)
+        process?.arguments = ["tunnel", "run", "--token", namedTunnelToken]
+        
+        outputPipe = Pipe()
+        process?.standardError = outputPipe
+        process?.standardOutput = Pipe() // 忽略 stdout
+        
+        try process?.run()
+        
+        // Named Tunnel 启动后等待几秒确认连接
+        try await Task.sleep(nanoseconds: 3_000_000_000) // 3秒
+        
+        // 检查进程是否还在运行
+        guard process?.isRunning == true else {
+            throw CloudflaredError.tunnelFailed
+        }
+        
+        tunnelURL = namedTunnelDomain
+        isRunning = true
+        
+        print("✅ Named Tunnel started: \(namedTunnelDomain)")
+        return namedTunnelDomain
+    }
+    
+    /// Start Quick Tunnel (temporary tunnel, as fallback)
+    func startQuickTunnel(localPort: Int) async throws -> String {
         guard let path = cloudflaredPath else {
             throw CloudflaredError.notInstalled
         }
@@ -98,6 +139,18 @@ class CloudflaredManager: ObservableObject {
                     continuation.resume(throwing: CloudflaredError.timeout)
                 }
             }
+        }
+    }
+    
+    /// Legacy interface: prefer Named Tunnel, fallback to Quick Tunnel on failure
+    func startTunnel(localPort: Int) async throws -> String {
+        do {
+            // Prefer Named Tunnel
+            return try await startNamedTunnel()
+        } catch {
+            print("⚠️ Named Tunnel failed, falling back to Quick Tunnel: \(error)")
+            // Fallback to Quick Tunnel
+            return try await startQuickTunnel(localPort: localPort)
         }
     }
     
