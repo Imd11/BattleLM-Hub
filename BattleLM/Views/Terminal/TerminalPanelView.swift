@@ -6,6 +6,7 @@ import Combine
 struct TerminalPanelView: View {
     @EnvironmentObject var appState: AppState
     @State private var isExpanded: Bool = true
+    @State private var isExpandHovered = false
     
     /// 当前群聊的成员 AI
     var memberAIs: [AIInstance] {
@@ -32,8 +33,14 @@ struct TerminalPanelView: View {
                 } label: {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.up")
                         .foregroundColor(.secondary)
+                        .padding(4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(isExpandHovered ? Color.primary.opacity(0.08) : Color.clear)
+                        )
                 }
                 .buttonStyle(.plain)
+                .onHover { isExpandHovered = $0 }
             }
             .padding()
             .background(Color(.windowBackgroundColor))
@@ -140,6 +147,8 @@ struct TerminalCardView: View {
     @State private var isSending: Bool = false
     @State private var isInteractiveMode: Bool = false  // 双模式切换
     @State private var isConnected: Bool = false
+    @State private var isModeHovered = false
+    @State private var isTermSendHovered = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -172,10 +181,15 @@ struct TerminalCardView: View {
                         }
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(isInteractiveMode ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.2))
+                        .background(
+                            isInteractiveMode
+                                ? Color.accentColor.opacity(isModeHovered ? 0.3 : 0.2)
+                                : Color.gray.opacity(isModeHovered ? 0.3 : 0.2)
+                        )
                         .cornerRadius(4)
                     }
                     .buttonStyle(.plain)
+                    .onHover { isModeHovered = $0 }
                     .help(isInteractiveMode ? "Switch to Snapshot mode" : "Switch to Interactive mode")
                 }
                 
@@ -239,8 +253,11 @@ struct TerminalCardView: View {
                         } label: {
                             Image(systemName: "arrow.up.circle.fill")
                                 .foregroundColor(.accentColor)
+                                .scaleEffect(isTermSendHovered ? 1.15 : 1.0)
+                                .animation(.easeInOut(duration: 0.12), value: isTermSendHovered)
                         }
                         .buttonStyle(.plain)
+                        .onHover { isTermSendHovered = $0 }
                         .disabled(inputText.isEmpty)
                     }
                 }

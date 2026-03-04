@@ -7,6 +7,7 @@ struct SidebarView: View {
     @ObservedObject private var remoteHost = RemoteHostServer.shared
     @State private var addAIHovered: Bool = false
     @State private var createGroupHovered: Bool = false
+    @State private var showHistory: Bool = false
 
     private var pairingHelpText: String {
         let count = remoteHost.connectedDevices.count
@@ -28,8 +29,9 @@ struct SidebarView: View {
                     .resizable()
                     .scaledToFit()
                     .frame(width: 28, height: 28)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 Text("BattleLM")
-                    .font(.title2)
+                    .font(.custom("Orbitron", size: 20))
                     .fontWeight(.bold)
                 Spacer()
             }
@@ -122,9 +124,16 @@ struct SidebarView: View {
                     }
                 }
                 
+                SidebarIconButton(icon: "clock.arrow.circlepath", help: "Conversation History") {
+                    showHistory = true
+                }
+                
                 Spacer()
             }
             .padding()
+            .sheet(isPresented: $showHistory) {
+                HistoryListView()
+            }
         }
         .background(Color(.windowBackgroundColor))
     }

@@ -9,9 +9,10 @@ struct ChatTextField: NSViewRepresentable {
 
     let placeholder: String
     @Binding var text: String
-    let focusId: UUID
-    @Binding var focusRequestId: UUID?
+    var focusId: UUID? = nil
+    var focusRequestId: Binding<UUID?> = .constant(nil)
     var onCommit: (() -> Void)? = nil
+    var onFocusChange: ((Bool) -> Void)? = nil
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
@@ -27,12 +28,15 @@ struct ChatTextField: NSViewRepresentable {
         field.isEditable = context.environment.isEnabled
         field.isSelectable = true
         field.isEnabled = context.environment.isEnabled
-        field.usesSingleLineMode = true
-        field.lineBreakMode = .byTruncatingTail
+        field.usesSingleLineMode = false
+        field.lineBreakMode = .byWordWrapping
+        field.font = .systemFont(ofSize: 15)
+        field.maximumNumberOfLines = 5
         
-        // Set fixed height
+        // 允许纵向自适应
         field.translatesAutoresizingMaskIntoConstraints = false
-        field.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.required, for: .vertical)
         
         context.coordinator.ensureAttached(to: field)
         return field
@@ -75,8 +79,9 @@ struct ChatTextField: NSViewRepresentable {
 
         // Sheet 关闭 / 视图重建后，有时 responder chain 不会自动把焦点给到输入框；
         // 这里用“请求式聚焦”确保新建实例后可立即输入。
-        if context.environment.isEnabled,
-           focusRequestId == focusId,
+        if let focusId,
+           context.environment.isEnabled,
+           focusRequestId.wrappedValue == focusId,
            nsView.window != nil,
            !context.coordinator.didAttemptFocusForCurrentRequest {
             context.coordinator.didAttemptFocusForCurrentRequest = true
@@ -86,35 +91,40 @@ struct ChatTextField: NSViewRepresentable {
                     window.makeFirstResponder(nsView)
                 }
             }
-        } else if focusRequestId != focusId {
+        } else if focusRequestId.wrappedValue != focusId {
             context.coordinator.didAttemptFocusForCurrentRequest = false
         }
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, focusId: focusId, focusRequestId: $focusRequestId, onCommit: onCommit)
+        Coordinator(text: $text, focusId: focusId, focusRequestId: focusRequestId, onCommit: onCommit, onFocusChange: onFocusChange)
     }
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
         private var text: Binding<String>
-        private let focusId: UUID
+        private let focusId: UUID?
         private var focusRequestId: Binding<UUID?>
         private let onCommit: (() -> Void)?
+        private let onFocusChange: ((Bool) -> Void)?
         private(set) var isEditing: Bool = false
         var isProgrammaticUpdate: Bool = false
         var isInUpdateNSView: Bool = false
         var didAttemptFocusForCurrentRequest: Bool = false
         var lastSeenSwiftUIText: String
 
-        init(text: Binding<String>, focusId: UUID, focusRequestId: Binding<UUID?>, onCommit: (() -> Void)?) {
+        init(text: Binding<String>, focusId: UUID?, focusRequestId: Binding<UUID?>, onCommit: (() -> Void)?, onFocusChange: ((Bool) -> Void)?) {
             self.text = text
             self.focusId = focusId
             self.focusRequestId = focusRequestId
             self.onCommit = onCommit
+            self.onFocusChange = onFocusChange
             self.lastSeenSwiftUIText = text.wrappedValue
         }
 
         deinit {
+            if let obs = firstResponderObserver {
+                NotificationCenter.default.removeObserver(obs)
+            }
         }
 
         func currentText(in field: NSTextField) -> String {
@@ -135,6 +145,9 @@ struct ChatTextField: NSViewRepresentable {
             }
         }
 
+        private var firstResponderObserver: NSObjectProtocol?
+        private weak var observedField: NSTextField?
+
         func ensureAttached(to field: NSTextField) {
             if field.delegate !== self {
                 field.delegate = self
@@ -147,10 +160,34 @@ struct ChatTextField: NSViewRepresentable {
             if field.action != #selector(Coordinator.commitAction(_:)) {
                 field.action = #selector(Coordinator.commitAction(_:))
             }
+
+            // 监听 firstResponder 变化以检测焦点（click 进入时触发）
+            if observedField !== field {
+                observedField = field
+                if let obs = firstResponderObserver {
+                    NotificationCenter.default.removeObserver(obs)
+                }
+                // 延迟检查 firstResponder，因为窗口可能还没准备好
+                firstResponderObserver = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didUpdateNotification,
+                    object: nil,
+                    queue: .main
+                ) { [weak self, weak field] _ in
+                    guard let self, let field, let window = field.window else { return }
+                    let isFocused = window.firstResponder === field.currentEditor()
+                    if isFocused != self.lastReportedFocus {
+                        self.lastReportedFocus = isFocused
+                        self.onFocusChange?(isFocused)
+                    }
+                }
+            }
         }
+
+        private var lastReportedFocus: Bool = false
 
         func controlTextDidBeginEditing(_ obj: Notification) {
             isEditing = true
+            // Focus already handled by firstResponder observer
         }
 
         func controlTextDidChange(_ obj: Notification) {
@@ -167,6 +204,7 @@ struct ChatTextField: NSViewRepresentable {
             }
             setBoundText(currentText(in: field), synchronous: false)
             isEditing = false
+            // Focus already handled by firstResponder observer
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -175,6 +213,16 @@ struct ChatTextField: NSViewRepresentable {
                 if textView.hasMarkedText() {
                     return false
                 }
+                // Shift+Enter → 插入换行
+                if NSEvent.modifierFlags.contains(.shift) {
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                    // 同步绑定文本
+                    let field = control as? NSTextField
+                    let value = field.map(currentText(in:)) ?? text.wrappedValue
+                    setBoundText(value, synchronous: false)
+                    return true
+                }
+                // 普通 Enter → 发送
                 let field = control as? NSTextField
                 let value = field.map(currentText(in:)) ?? text.wrappedValue
                 setBoundText(value, synchronous: true)

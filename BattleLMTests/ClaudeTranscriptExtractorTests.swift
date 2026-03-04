@@ -143,13 +143,13 @@ final class ClaudeTranscriptExtractorTests: XCTestCase {
     
     func testProjectPathEncoding() {
         // 测试路径编码规则：/ → -
-        let path = "/Users/demo/Projects/BattleLM"
+        let path = "/Users/yang/Desktop/GitHub/BattleLM"
         let encoded = path.replacingOccurrences(of: "/", with: "-")
         
-        XCTAssertEqual(encoded, "-Users-demo-Projects-BattleLM")
+        XCTAssertEqual(encoded, "-Users-yang-Desktop-GitHub-BattleLM")
         
         // 去掉开头的 - 得到另一种格式
         let withoutLeadingDash = String(encoded.dropFirst())
-        XCTAssertEqual(withoutLeadingDash, "Users-demo-Projects-BattleLM")
+        XCTAssertEqual(withoutLeadingDash, "Users-yang-Desktop-GitHub-BattleLM")
     }
 }

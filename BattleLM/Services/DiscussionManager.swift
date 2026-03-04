@@ -64,7 +64,8 @@ class DiscussionManager: ObservableObject {
     var onPhaseChange: ((DiscussionPhase) -> Void)?
     var onRoundComplete: ((Int, [UUID: String]) -> Void)?
     
-    private let sessionManager = SessionManager.shared
+    private var engine: any AIStreamEngine { AIStreamEngineRouter.active }
+    private let sessionManager = SessionManager.shared  // 保留以继续支持 cancel 中的 ESC 发送
     
     private init() {}
     
@@ -152,8 +153,8 @@ class DiscussionManager: ObservableObject {
         // 向所有参与讨论的 AI 终端发送 Escape，中断 AI 工作
         let aiIds = expectedAIs
         Task {
-            await sessionManager.sendEscapeToSessions(for: aiIds)
-            await sessionManager.clearPendingMessages(for: aiIds)
+            await AIStreamEngineRouter.active.sendEscapeToSessions(for: aiIds)
+            await AIStreamEngineRouter.active.clearPendingMessages(for: aiIds)
         }
         
         print("🛑 Discussion cancelled — ESC sent to \(aiIds.count) AI terminals")
@@ -186,11 +187,11 @@ class DiscussionManager: ObservableObject {
             for ai in ais where ai.isActive && !ai.isEliminated {
                 group.addTask {
                     do {
-                        try await self.sessionManager.sendMessage(question, to: ai)
-                        let response = try await self.sessionManager.waitForResponse(
+                        try await self.engine.sendMessage(question, to: ai)
+                        let response = try await self.engine.waitForResponse(
                             from: ai,
-                            stableSeconds: 3.0,
-                            maxWait: 180.0
+                            stableSeconds: 8.0,
+                            maxWait: 360.0
                         )
                         let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
                         guard !trimmed.isEmpty else { return nil }
@@ -242,8 +243,8 @@ class DiscussionManager: ObservableObject {
             for (ai, prompt) in prompts {
                 group.addTask {
                     do {
-                        try await self.sessionManager.sendMessage(prompt, to: ai)
-                        let response = try await self.sessionManager.waitForResponse(
+                        try await self.engine.sendMessage(prompt, to: ai)
+                        let response = try await self.engine.waitForResponse(
                             from: ai,
                             stableSeconds: 3.0,
                             maxWait: 180.0
@@ -304,8 +305,8 @@ class DiscussionManager: ObservableObject {
             for (ai, prompt) in prompts {
                 group.addTask {
                     do {
-                        try await self.sessionManager.sendMessage(prompt, to: ai)
-                        let response = try await self.sessionManager.waitForResponse(
+                        try await self.engine.sendMessage(prompt, to: ai)
+                        let response = try await self.engine.waitForResponse(
                             from: ai,
                             stableSeconds: 3.0,
                             maxWait: 180.0

@@ -1,6 +1,62 @@
 // BattleLM/Models/Enums.swift
 import Foundation
 
+/// 推理深度（第二级选择）
+enum ReasoningEffort: String, Codable, CaseIterable, Identifiable {
+    case low = "low"
+    case medium = "medium"
+    case high = "high"
+    case xhigh = "xhigh"
+    
+    var id: String { rawValue }
+    
+    var displayName: String {
+        switch self {
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        case .xhigh: return "Extra High"
+        }
+    }
+    
+    var shortName: String {
+        switch self {
+        case .low: return "Low"
+        case .medium: return "Med"
+        case .high: return "High"
+        case .xhigh: return "XHigh"
+        }
+    }
+    
+    var subtitle: String {
+        switch self {
+        case .low: return "Fast responses with lighter reasoning"
+        case .medium: return "Balances speed and reasoning depth"
+        case .high: return "Greater reasoning depth for complex problems"
+        case .xhigh: return "Extra high reasoning depth for complex problems"
+        }
+    }
+}
+
+/// 模型选项
+struct ModelOption: Identifiable {
+    let id: String                           // 唯一 ID (e.g. "claude-sonnet-4-6:thinking")
+    let displayName: String                  // 显示名称
+    let subtitle: String                     // 描述
+    var isDefault: Bool = false
+    var reasoningEfforts: [ReasoningEffort] = []  // 空 = 无第二级选择
+    var defaultEffort: ReasoningEffort? = nil     // 默认推理深度
+    var enableThinking: Bool = false              // 是否开启 thinking 模式
+    
+    /// 是否有第二级选择
+    var hasReasoningEffort: Bool { !reasoningEfforts.isEmpty }
+    
+    /// 实际传给 API 的模型 ID（去掉 (thinking) 后缀）
+    var actualModelId: String {
+        id.replacingOccurrences(of: "(thinking)", with: "")
+    }
+}
+
 /// AI 类型
 enum AIType: String, Codable, CaseIterable, Identifiable {
     case claude = "claude"
@@ -11,6 +67,10 @@ enum AIType: String, Codable, CaseIterable, Identifiable {
     
     var id: String { rawValue }
     
+    /// 用户可见的 AI 类型（排除未就绪的）
+    static var userVisibleCases: [AIType] {
+        allCases.filter { $0 != .kimi }
+    }    
     var displayName: String {
         switch self {
         case .claude: return "Claude"
@@ -61,6 +121,75 @@ enum AIType: String, Codable, CaseIterable, Identifiable {
         case .qwen: return "#6366F1" // Indigo (Qwen's color)
         case .kimi: return "#00D4AA" // Kimi Cyan/Teal
         }
+    }
+
+    /// 当前 AI 类型可用的模型列表
+    var availableModels: [ModelOption] {
+        let fullEfforts: [ReasoningEffort] = [.low, .medium, .high, .xhigh]
+        let miniEfforts: [ReasoningEffort] = [.medium, .high]
+        
+        switch self {
+        case .codex:
+            return [
+                ModelOption(id: "gpt-5.3-codex", displayName: "gpt-5.3-codex",
+                           subtitle: "Latest frontier agentic coding model",
+                           isDefault: true,
+                           reasoningEfforts: fullEfforts, defaultEffort: .medium),
+                ModelOption(id: "gpt-5.2-codex", displayName: "gpt-5.2-codex",
+                           subtitle: "Frontier agentic coding model",
+                           reasoningEfforts: fullEfforts, defaultEffort: .medium),
+                ModelOption(id: "gpt-5.1-codex-max", displayName: "gpt-5.1-codex-max",
+                           subtitle: "Codex-optimized flagship for deep and fast reasoning",
+                           reasoningEfforts: fullEfforts, defaultEffort: .medium),
+                ModelOption(id: "gpt-5.2", displayName: "gpt-5.2",
+                           subtitle: "Latest frontier model with improvements across knowledge, reasoning and coding",
+                           reasoningEfforts: fullEfforts, defaultEffort: .medium),
+                ModelOption(id: "gpt-5.1-codex-mini", displayName: "gpt-5.1-codex-mini",
+                           subtitle: "Optimized for codex. Cheaper, faster, but less capable",
+                           reasoningEfforts: miniEfforts, defaultEffort: .medium),
+            ]
+        case .claude:
+            let claudeEfforts: [ReasoningEffort] = [.low, .medium, .high]
+            return [
+                ModelOption(id: "claude-sonnet-4-6", displayName: "claude-sonnet-4-6",
+                           subtitle: "Latest fast and capable", isDefault: true),
+                ModelOption(id: "claude-sonnet-4-6(thinking)", displayName: "claude-sonnet-4-6(thinking)",
+                           subtitle: "Sonnet 4.6 with extended thinking",
+                           reasoningEfforts: claudeEfforts, defaultEffort: .high,
+                           enableThinking: true),
+                ModelOption(id: "claude-opus-4-6(thinking)", displayName: "claude-opus-4-6(thinking)",
+                           subtitle: "Most powerful Claude model with thinking",
+                           enableThinking: true),
+
+                ModelOption(id: "claude-haiku-4-5-20251001", displayName: "claude-haiku-4-5-20251001",
+                           subtitle: "Fast and affordable"),
+            ]
+        case .qwen:
+            return [
+                ModelOption(id: "coder-model", displayName: "coder-model",
+                           subtitle: "Coding agent model", isDefault: true),
+                ModelOption(id: "vision-model", displayName: "vision-model",
+                           subtitle: "Vision-capable model"),
+            ]
+        case .gemini:
+            return [
+                ModelOption(id: "gemini-3-pro-preview", displayName: "gemini-3-pro-preview",
+                           subtitle: "Most intelligent model, advanced reasoning", isDefault: true),
+                ModelOption(id: "gemini-3-flash-preview", displayName: "gemini-3-flash-preview",
+                           subtitle: "Pro-level intelligence at Flash speed"),
+                ModelOption(id: "gemini-2.5-pro", displayName: "gemini-2.5-pro",
+                           subtitle: "Previous generation pro model"),
+                ModelOption(id: "gemini-2.5-flash", displayName: "gemini-2.5-flash",
+                           subtitle: "Previous generation flash model"),
+            ]
+        case .kimi:
+            return []
+        }
+    }
+
+    /// 默认模型 ID
+    var defaultModelId: String {
+        availableModels.first(where: \.isDefault)?.id ?? availableModels.first?.id ?? ""
     }
 }
 

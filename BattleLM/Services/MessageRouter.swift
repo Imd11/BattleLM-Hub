@@ -7,6 +7,7 @@ class MessageRouter: ObservableObject {
     static let shared = MessageRouter()
     
     private let sessionManager = SessionManager.shared
+    private var engine: any AIStreamEngine { AIStreamEngineRouter.active }
     
     private init() {}
     
@@ -76,12 +77,13 @@ class MessageRouter: ObservableObject {
     
     /// 发送消息并等待响应
     private func sendAndWait(_ message: String, to ai: AIInstance) async -> AIResponse? {
+        let engine = self.engine
         do {
             // 发送消息
-            try await sessionManager.sendMessage(message, to: ai)
+            try await engine.sendMessage(message, to: ai)
             
             // 等待响应
-            let response = try await sessionManager.waitForResponse(
+            let response = try await engine.waitForResponse(
                 from: ai,
                 stableSeconds: 3.0,
                 maxWait: 60.0
@@ -112,12 +114,13 @@ class MessageRouter: ObservableObject {
         to ai: AIInstance,
         onUpdate: @escaping (String, Bool, Bool) -> Void
     ) async {
+        let engine = self.engine
         do {
             // 发送消息
-            try await sessionManager.sendMessage(message, to: ai)
+            try await engine.sendMessage(message, to: ai)
             
             // 流式获取响应
-            try await sessionManager.streamResponse(
+            try await engine.streamResponse(
                 from: ai,
                 onUpdate: onUpdate,
                 stableSeconds: 4.0,

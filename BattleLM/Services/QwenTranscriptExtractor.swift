@@ -1,9 +1,10 @@
-// BattleLM/Services/ClaudeTranscriptExtractor.swift
+// BattleLM/Services/QwenTranscriptExtractor.swift
 import Foundation
 
-/// Claude transcript 提取器
-/// 从 ~/.claude/projects/<encoded_path>/*.jsonl 读取结构化数据，避免解析 PTY 输出
-class ClaudeTranscriptExtractor {
+/// Qwen transcript 提取器
+/// 从 ~/.qwen/projects/<encoded_path>/chats/*.jsonl 读取结构化数据
+/// 格式与 Claude 极其相似，字段名略有不同（parts vs content, role:"model" vs "assistant"）
+class QwenTranscriptExtractor {
     
     /// 错误类型
     enum ExtractionError: Error, LocalizedError {
@@ -15,72 +16,50 @@ class ClaudeTranscriptExtractor {
         var errorDescription: String? {
             switch self {
             case .transcriptNotFound(let path):
-                return "Transcript not found at: \(path)"
+                return "Qwen transcript not found at: \(path)"
             case .noUserMessage:
-                return "No user message found in transcript"
+                return "No user message found in Qwen transcript"
             case .noAssistantResponse:
                 return "No assistant response found after last user message"
             case .parseError(let detail):
-                return "JSONL parse error: \(detail)"
+                return "Qwen JSONL parse error: \(detail)"
             }
         }
     }
     
     // MARK: - JSONL Entry Models
     
-    /// JSONL 行的顶层结构
+    /// Qwen JSONL 行的顶层结构
+    /// 示例:
+    /// {"uuid":"...","type":"user","message":{"role":"user","parts":[{"text":"say hi"}]}}
+    /// {"uuid":"...","type":"assistant","message":{"role":"model","parts":[{"text":"思考","thought":true},{"text":"Hi! 👋"}]}}
     private struct TranscriptEntry: Decodable {
-        let type: String
+        let type: String                // "user" | "assistant" | "system"
         let message: Message?
         let uuid: String?
         let parentUuid: String?
         let timestamp: String?
-        let userType: String?
-        let isSidechain: Bool?
+        let sessionId: String?
+        let subtype: String?            // system entries have subtype like "ui_telemetry"
         
         struct Message: Decodable {
-            let role: String?
-            let content: ContentValue?
+            let role: String?           // "user" | "model"
+            let parts: [Part]?
         }
         
-        struct ContentBlock: Decodable {
-            let type: String
+        struct Part: Decodable {
             let text: String?
-            let thinking: String?
-        }
-
-        enum ContentValue: Decodable {
-            case string(String)
-            case blocks([ContentBlock])
-
-            init(from decoder: Decoder) throws {
-                let container = try decoder.singleValueContainer()
-                if let stringValue = try? container.decode(String.self) {
-                    self = .string(stringValue)
-                    return
-                }
-                self = .blocks(try container.decode([ContentBlock].self))
-            }
+            let thought: Bool?          // true = thinking content
         }
     }
     
     // MARK: - Public API
     
-    /// 从 Claude transcript 提取最后一条 assistant 响应
-    /// - Parameters:
-    ///   - workingDirectory: AI 实例的工作目录（用于定位 Claude project）
-    ///   - waitForStable: 是否等待内容稳定
-    ///   - stableSeconds: 稳定判定时间
-    /// - Returns: 完整的 assistant 响应文本
-    static func extractLatestResponse(workingDirectory: String,
-                                       waitForStable: Bool = false,
-                                       stableSeconds: Double = 2.0) throws -> String {
-        // 1. 查找 transcript 文件
+    /// 从 Qwen transcript 提取最后一条 assistant 响应
+    static func extractLatestResponse(workingDirectory: String) throws -> String {
         guard let transcriptPath = transcriptURL(for: workingDirectory) else {
             throw ExtractionError.transcriptNotFound(workingDirectory)
         }
-        
-        // 2. 读取并解析 JSONL
         return try parseTranscript(at: transcriptPath, afterUserUuid: nil)
     }
     
@@ -99,11 +78,9 @@ class ClaudeTranscriptExtractor {
         var target: (uuid: String, index: Int)? = nil
         
         while Date().timeIntervalSince(startTime) < maxWait {
-            // 检查文件修改时间
             let attrs = try? FileManager.default.attributesOfItem(atPath: transcriptURL.path)
             let modTime = attrs?[.modificationDate] as? Date
             
-            // 文件有更新，重新解析
             if modTime != lastModTime {
                 do {
                     let entries = try parseEntries(at: transcriptURL)
@@ -117,7 +94,6 @@ class ClaudeTranscriptExtractor {
                         ) {
                             target = found
                         } else {
-                            // 本轮 user 还没写入 transcript，继续等
                             lastModTime = modTime
                             continue
                         }
@@ -134,22 +110,19 @@ class ClaudeTranscriptExtractor {
                         lastChangeTime = Date()
                         
                         await MainActor.run {
-                            onUpdate(content, false) // (内容, 是否完成)
+                            onUpdate(content, false)
                         }
                     }
                     
-                    // 解析成功后再更新 modTime，避免写入中途解析失败导致“错过下一次重试”
                     lastModTime = modTime
                 } catch {
-                    // 解析失败时继续等待（可能文件正在写入）
-                    print("⚠️ Transcript parse error (will retry): \(error)")
+                    print("⚠️ Qwen transcript parse error (will retry): \(error)")
                 }
             }
             
-            // 检查是否稳定
             if !lastContent.isEmpty && Date().timeIntervalSince(lastChangeTime) >= stableSeconds {
                 await MainActor.run {
-                    onUpdate(lastContent, true) // 完成
+                    onUpdate(lastContent, true)
                 }
                 return lastContent
             }
@@ -157,7 +130,6 @@ class ClaudeTranscriptExtractor {
             try await Task.sleep(nanoseconds: 300_000_000) // 0.3s
         }
         
-        // 超时但有内容
         if !lastContent.isEmpty {
             await MainActor.run {
                 onUpdate(lastContent, true)
@@ -167,29 +139,34 @@ class ClaudeTranscriptExtractor {
         
         throw ExtractionError.noAssistantResponse
     }
-
-    /// 获取 transcript 中最后一条 user 的 uuid（用于对齐本轮请求）
+    
+    /// 获取 transcript 中最后一条 user 的 uuid
     static func latestUserUuid(workingDirectory: String) throws -> String {
         guard let transcriptPath = transcriptURL(for: workingDirectory) else {
             throw ExtractionError.transcriptNotFound(workingDirectory)
         }
         return try latestUserUuid(in: transcriptPath)
     }
-
-    /// 获取 Claude transcript 文件 URL
+    
+    /// 获取 Qwen transcript 文件 URL
     static func transcriptURL(for workingDirectory: String) -> URL? {
         findTranscriptFile(for: workingDirectory)
     }
     
+    /// 检查 transcript 是否可用
+    static func isTranscriptAvailable(for workingDirectory: String) -> Bool {
+        return findTranscriptFile(for: workingDirectory) != nil
+    }
+    
     // MARK: - Private Helpers
     
-    /// 查找 Claude transcript 文件
-    /// 参考 claudecode-telegram/bridge.py 的编码规则
+    /// 查找 Qwen transcript 文件
+    /// Qwen 路径编码: / → -（和 Claude 一致）
+    /// 结构: ~/.qwen/projects/<encoded_path>/chats/<session_id>.jsonl
     private static func findTranscriptFile(for workingDirectory: String) -> URL? {
         let homeDir = FileManager.default.homeDirectoryForCurrentUser
-        let claudeProjectsDir = homeDir.appendingPathComponent(".claude/projects")
+        let qwenProjectsDir = homeDir.appendingPathComponent(".qwen/projects")
         
-        // 规范化路径（展开 ~ 等）
         let expandedPath: String
         if workingDirectory.hasPrefix("~") {
             expandedPath = homeDir.path + workingDirectory.dropFirst()
@@ -201,7 +178,7 @@ class ClaudeTranscriptExtractor {
         
         // 编码规则：/ 替换为 -
         let encoded = expandedPath.replacingOccurrences(of: "/", with: "-")
-
+        
         let withoutLeadingDash: String
         if encoded.hasPrefix("-") {
             withoutLeadingDash = String(encoded.dropFirst())
@@ -209,57 +186,48 @@ class ClaudeTranscriptExtractor {
             withoutLeadingDash = encoded
         }
         
-        // 尝试两种前缀格式（有些 Claude 版本在开头加 -，有些不加）
         let prefixesToTry = [
             encoded,             // -Users-yang-Desktop-GitHub-xxx
-            withoutLeadingDash   // Users-yang-Desktop-GitHub-xxx (去掉开头的 -)
+            withoutLeadingDash   // Users-yang-Desktop-GitHub-xxx
         ]
         
         for prefix in prefixesToTry {
-            let projectDir = claudeProjectsDir.appendingPathComponent(prefix)
+            let projectDir = qwenProjectsDir.appendingPathComponent(prefix)
+            // Qwen 把聊天文件放在 chats/ 子目录
+            let chatsDir = projectDir.appendingPathComponent("chats")
             
-            guard FileManager.default.fileExists(atPath: projectDir.path) else {
+            guard FileManager.default.fileExists(atPath: chatsDir.path) else {
                 continue
             }
             
-            // 查找最新的 .jsonl 文件
-            if let latestJsonl = findLatestJsonl(in: projectDir) {
-                print("✅ Found Claude transcript: \(latestJsonl.path)")
+            if let latestJsonl = findLatestJsonl(in: chatsDir) {
+                print("✅ Found Qwen transcript: \(latestJsonl.path)")
                 return latestJsonl
             }
         }
         
-        print("⚠️ Claude transcript not found for: \(workingDirectory)")
-        print("   Tried prefixes: \(prefixesToTry)")
+        print("⚠️ Qwen transcript not found for: \(workingDirectory)")
         return nil
     }
     
-    /// 在目录中查找最新的 .jsonl 文件
+    /// 查找最新的 .jsonl 文件
     private static func findLatestJsonl(in directory: URL) -> URL? {
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
             options: .skipsHiddenFiles
         ) else {
             return nil
         }
-
-        // Claude Code 会生成各种 jsonl（包含 agent-*.jsonl、空文件等），这里只选可能包含对话记录的文件
+        
         let jsonlFiles = contents.filter { url in
             guard url.pathExtension == "jsonl" else { return false }
-            let name = url.lastPathComponent
-            if name.hasPrefix("agent-") { return false }
             if let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size == 0 {
                 return false
             }
-            // 必须包含对话 user 记录，否则可能是 snapshot/summary 文件
-            if !(fileContainsConversationMarkers(url)) {
-                return false
-            }
-            return true
+            return fileContainsConversationMarkers(url)
         }
         
-        // 按修改时间排序，取最新
         let sorted = jsonlFiles.sorted { a, b in
             let aDate = (try? a.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
             let bDate = (try? b.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
@@ -269,12 +237,10 @@ class ClaudeTranscriptExtractor {
         return sorted.first
     }
     
-    /// 解析 JSONL transcript，提取最后一个 user 消息后的 assistant 响应
-    /// - Parameter afterUserUuid: 指定要绑定的 user uuid；为 nil 则自动使用最后一个 user
+    /// 解析 transcript，提取指定 user 消息后的 assistant 响应
     private static func parseTranscript(at url: URL, afterUserUuid: String?) throws -> String {
         let entries = try parseEntries(at: url)
         
-        // 从后往前找最后一个 user 消息
         let userIdx: Int
         if let afterUserUuid {
             guard let idx = entries.lastIndex(where: { $0.type == "user" && $0.uuid == afterUserUuid }) else {
@@ -289,7 +255,7 @@ class ClaudeTranscriptExtractor {
         }
         return try extractAssistantText(from: entries, userIndex: userIdx, userUuid: entries[userIdx].uuid)
     }
-
+    
     private static func latestUserUuid(in url: URL) throws -> String {
         let entries = try parseEntries(at: url)
         var lastUserUuid: String? = nil
@@ -298,11 +264,10 @@ class ClaudeTranscriptExtractor {
                 lastUserUuid = uuid
             }
         }
-        
         guard let result = lastUserUuid else { throw ExtractionError.noUserMessage }
         return result
     }
-
+    
     private static func parseEntries(at url: URL) throws -> [TranscriptEntry] {
         let content = try String(contentsOf: url, encoding: .utf8)
         let lines = content.components(separatedBy: .newlines).filter { !$0.isEmpty }
@@ -320,7 +285,7 @@ class ClaudeTranscriptExtractor {
         guard !entries.isEmpty else { throw ExtractionError.noUserMessage }
         return entries
     }
-
+    
     private static func findTargetUser(
         in entries: [TranscriptEntry],
         afterUserUuid: String?,
@@ -332,9 +297,9 @@ class ClaudeTranscriptExtractor {
         
         for (index, entry) in entries.enumerated() {
             guard entry.type == "user" else { continue }
-            guard entry.userType == nil || entry.userType == "external" else { continue }
-            guard entry.isSidechain != true else { continue }
             guard let uuid = entry.uuid else { continue }
+            // Qwen 的 system/ui_telemetry 记录跳过
+            if entry.subtype != nil { continue }
             
             if let afterUserUuid, uuid == afterUserUuid {
                 baselineSeen = true
@@ -359,6 +324,7 @@ class ClaudeTranscriptExtractor {
         return found
     }
     
+    /// 提取 user 之后的 assistant 文本（跳过 thinking 部分）
     private static func extractAssistantText(from entries: [TranscriptEntry], userIndex: Int, userUuid: String?) throws -> String {
         guard userIndex < entries.count else { throw ExtractionError.noUserMessage }
         guard let userUuid else { throw ExtractionError.noUserMessage }
@@ -368,6 +334,7 @@ class ClaudeTranscriptExtractor {
         
         for i in (userIndex + 1)..<entries.count {
             let entry = entries[i]
+            // 遇到下一个 user 消息就停止
             if entry.type == "user" {
                 break
             }
@@ -379,16 +346,13 @@ class ClaudeTranscriptExtractor {
                 chain.insert(uuid)
             }
             
-            guard let msg = entry.message, let content = msg.content else { continue }
-            switch content {
-            case .blocks(let blocks):
-                for block in blocks {
-                    if block.type == "text", let text = block.text, !text.isEmpty {
-                        textParts.append(text)
-                    }
+            guard let msg = entry.message, let parts = msg.parts else { continue }
+            for part in parts {
+                // 跳过 thinking 内容，只提取正式回复
+                if part.thought == true { continue }
+                if let text = part.text, !text.isEmpty {
+                    textParts.append(text)
                 }
-            case .string:
-                break
             }
         }
         
@@ -398,17 +362,13 @@ class ClaudeTranscriptExtractor {
         
         return textParts.joined(separator: "\n\n")
     }
-
+    
+    /// 从 user entry 提取用户消息文本
     private static func userText(from entry: TranscriptEntry) -> String? {
-        guard entry.type == "user", let msg = entry.message, let content = msg.content else { return nil }
-        switch content {
-        case .string(let s):
-            return s
-        case .blocks:
-            return nil
-        }
+        guard entry.type == "user", let msg = entry.message, let parts = msg.parts else { return nil }
+        return parts.compactMap { $0.text }.joined()
     }
-
+    
     private static func normalizeUserText(_ text: String?) -> String? {
         guard let text else { return nil }
         return text
@@ -416,23 +376,17 @@ class ClaudeTranscriptExtractor {
             .replacingOccurrences(of: "\r", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
-
+    
     private static func parseTimestamp(_ timestamp: String?) -> Date? {
         guard let timestamp else { return nil }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.date(from: timestamp) ?? ISO8601DateFormatter().date(from: timestamp)
     }
-
+    
     private static func fileContainsConversationMarkers(_ url: URL) -> Bool {
         guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else { return false }
-        // quick scan for at least one user record; avoids snapshot-only files
         guard let text = String(data: data, encoding: .utf8) else { return false }
         return text.contains("\"type\":\"user\"")
-    }
-    
-    /// 检查 transcript 是否可用于指定的工作目录
-    static func isTranscriptAvailable(for workingDirectory: String) -> Bool {
-        return findTranscriptFile(for: workingDirectory) != nil
     }
 }

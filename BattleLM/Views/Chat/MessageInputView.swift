@@ -10,6 +10,7 @@ struct MessageInputView: View {
     
     @EnvironmentObject var appState: AppState
     @FocusState private var isFocused: Bool
+    @State private var isInputFocused: Bool = false
     @ObservedObject private var discussionManager = DiscussionManager.shared
     @State private var isModeMenuOpen = false
     @State private var isModeHovered = false
@@ -38,173 +39,209 @@ struct MessageInputView: View {
     }
     
     var body: some View {
-        HStack(spacing: 12) {
-            // 模式选择器（自定义弹出样式）
-            Button {
-                if !isBattling { isModeMenuOpen.toggle() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: selectedMode.iconName)
-                        .font(.system(size: 13))
-                    Text(selectedMode.displayName)
-                        .font(.system(size: 13))
-                        .fontWeight(.medium)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isModeMenuOpen ? Color.accentColor.opacity(0.15) : (isModeHovered ? Color.primary.opacity(0.12) : Color.clear))
-                )
-                .foregroundColor(.primary)
-                .cornerRadius(8)
-            }
-            .buttonStyle(.plain)
-            .frame(width: selectedMode == .discussion ? 110 : 90, alignment: .leading)
-            .onHover { hovering in
-                isModeHovered = hovering
-            }
-            .disabled(isBattling)
-            .background(
-                Group {
-                    if isModeMenuOpen {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .frame(width: 10000, height: 10000)
-                            .fixedSize()
-                            .onTapGesture { isModeMenuOpen = false }
-                    }
-                }
-            )
-            .overlay(alignment: .bottomLeading) {
-                if isModeMenuOpen {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(ChatMode.allCases.enumerated()), id: \.element.id) { index, mode in
-                            ModeMenuRow(mode: mode, isSelected: mode == selectedMode) {
-                                selectedMode = mode
-                                isModeMenuOpen = false
-                            }
-                            
-                            if index < ChatMode.allCases.count - 1 {
-                                Divider()
-                                    .padding(.horizontal, 8)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 6)
-                    .frame(width: 260)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(Color(.windowBackgroundColor))
-                            .shadow(color: .black.opacity(0.25), radius: 8, y: -2)
-                    )
-                    .offset(y: -36)
-                }
-            }
+        GeometryReader { inputGeo in
+            let sideInset = 16 + inputGeo.size.width * 0.15
             
-            // Solo 模式：AI 选择器
-            if selectedMode == .solo {
-                Button {
-                    if !isBattling { isSoloMenuOpen.toggle() }
-                } label: {
-                    HStack(spacing: 6) {
-                        if let targetId = soloTargetAIId,
-                           let targetAI = appState.aiInstance(for: targetId) {
-                            AILogoView(aiType: targetAI.type, size: 16)
-                            Text(targetAI.name)
-                                .font(.system(size: 13))
-                                .fontWeight(.medium)
-                        } else {
-                            Text("Select AI")
-                                .font(.system(size: 13))
-                                .fontWeight(.medium)
-                        }
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption2)
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(isSoloMenuOpen ? Color.primary.opacity(0.15) : (isSoloHovered ? Color.primary.opacity(0.12) : Color.clear))
-                    )
-                    .foregroundColor(.primary)
-                }
-                .buttonStyle(.plain)
-                .onHover { hovering in
-                    isSoloHovered = hovering
-                }
-                .disabled(isBattling)
-                .background(
-                    Group {
-                        if isSoloMenuOpen {
-                            Color.clear
-                                .contentShape(Rectangle())
-                                .frame(width: 10000, height: 10000)
-                                .fixedSize()
-                                .onTapGesture { isSoloMenuOpen = false }
-                        }
-                    }
-                )
-                .overlay(alignment: .bottomLeading) {
-                    if isSoloMenuOpen {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(memberAIs.enumerated()), id: \.element.id) { index, ai in
-                                SoloAIRow(ai: ai, isSelected: soloTargetAIId == ai.id) {
-                                    soloTargetAIId = ai.id
-                                    isSoloMenuOpen = false
-                                }
-                                
-                                if index < memberAIs.count - 1 {
-                                    Divider()
-                                        .padding(.horizontal, 8)
-                                }
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                
+                VStack(spacing: 0) {
+                    // ── Row 1: 输入框 ──
+                    ChatTextField(
+                        placeholder: isBattling ? "AIs are battling..." : modePlaceholder,
+                        text: $inputText,
+                        onCommit: {
+                            if !inputText.isEmpty && isSoloReady {
+                                onSend()
+                            }
+                        },
+                        onFocusChange: { focused in
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                isInputFocused = focused
                             }
                         }
-                        .padding(.vertical, 6)
-                        .frame(width: 180)
+                    )
+                    .frame(minHeight: 36)
+                    .disabled(isBattling)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 10)
+                    .padding(.bottom, 6)
+                    
+                    // ── Row 2: 工具栏 ──
+                    HStack(spacing: 8) {
+                        // 模式选择器
+                        Button {
+                            if !isBattling { isModeMenuOpen.toggle() }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: selectedMode.iconName)
+                                    .font(.system(size: 11))
+                                Text(selectedMode.displayName)
+                                    .font(.system(size: 11, weight: .medium))
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 8))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(isModeMenuOpen ? Color.accentColor.opacity(0.15) : (isModeHovered ? Color.primary.opacity(0.08) : Color(.controlBackgroundColor)))
+                            )
+                            .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .onHover { hovering in isModeHovered = hovering }
+                        .disabled(isBattling)
                         .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(Color(.windowBackgroundColor))
-                                .shadow(color: .black.opacity(0.25), radius: 8, y: -2)
+                            Group {
+                                if isModeMenuOpen {
+                                    Color.clear
+                                        .contentShape(Rectangle())
+                                        .frame(width: 10000, height: 10000)
+                                        .fixedSize()
+                                        .onTapGesture { isModeMenuOpen = false }
+                                }
+                            }
                         )
-                        .offset(y: -36)
+                        .overlay(alignment: .bottomLeading) {
+                            if isModeMenuOpen {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    ForEach(Array(ChatMode.allCases.enumerated()), id: \.element.id) { index, mode in
+                                        ModeMenuRow(mode: mode, isSelected: mode == selectedMode) {
+                                            selectedMode = mode
+                                            isModeMenuOpen = false
+                                        }
+                                        
+                                        if index < ChatMode.allCases.count - 1 {
+                                            Divider()
+                                                .padding(.horizontal, 8)
+                                        }
+                                    }
+                                }
+                                .padding(.vertical, 6)
+                                .frame(width: 260)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color(.windowBackgroundColor))
+                                        .shadow(color: .black.opacity(0.25), radius: 8, y: -2)
+                                )
+                                .offset(y: -36)
+                            }
+                        }
+                        
+                        // Solo 模式：AI 选择器
+                        if selectedMode == .solo {
+                            Button {
+                                if !isBattling { isSoloMenuOpen.toggle() }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    if let targetId = soloTargetAIId,
+                                       let targetAI = appState.aiInstance(for: targetId) {
+                                        AILogoView(aiType: targetAI.type, size: 14)
+                                        Text(targetAI.name)
+                                            .font(.system(size: 11, weight: .medium))
+                                    } else {
+                                        Text("Select AI")
+                                            .font(.system(size: 11, weight: .medium))
+                                    }
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.system(size: 8))
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(isSoloMenuOpen ? Color.primary.opacity(0.15) : (isSoloHovered ? Color.primary.opacity(0.08) : Color(.controlBackgroundColor)))
+                                )
+                                .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .onHover { hovering in isSoloHovered = hovering }
+                            .disabled(isBattling)
+                            .background(
+                                Group {
+                                    if isSoloMenuOpen {
+                                        Color.clear
+                                            .contentShape(Rectangle())
+                                            .frame(width: 10000, height: 10000)
+                                            .fixedSize()
+                                            .onTapGesture { isSoloMenuOpen = false }
+                                    }
+                                }
+                            )
+                            .overlay(alignment: .bottomLeading) {
+                                if isSoloMenuOpen {
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        ForEach(Array(memberAIs.enumerated()), id: \.element.id) { index, ai in
+                                            SoloAIRow(ai: ai, isSelected: soloTargetAIId == ai.id) {
+                                                soloTargetAIId = ai.id
+                                                isSoloMenuOpen = false
+                                            }
+                                            
+                                            if index < memberAIs.count - 1 {
+                                                Divider()
+                                                    .padding(.horizontal, 8)
+                                            }
+                                        }
+                                    }
+                                    .padding(.vertical, 6)
+                                    .frame(width: 180)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(Color(.windowBackgroundColor))
+                                            .shadow(color: .black.opacity(0.25), radius: 8, y: -2)
+                                    )
+                                    .offset(y: -36)
+                                }
+                            }
+                        }
+                        
+                        Spacer()
+                        
+                        // 发送按钮
+                        sendButton
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
                 }
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color(.windowBackgroundColor))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16)
+                                .stroke(
+                                    isInputFocused ? Color.accentColor.opacity(0.6) : Color.gray.opacity(0.25),
+                                    lineWidth: isInputFocused ? 1.5 : 1
+                                )
+                        )
+                        .shadow(color: .black.opacity(0.08), radius: 8, x: 0, y: 2)
+                )
+                .padding(.horizontal, sideInset)
+                .padding(.top, 6)
+                .padding(.bottom, 12)
             }
-            
-            // 输入框
-            TextField(isBattling ? "AIs are battling..." : modePlaceholder, text: $inputText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...5)
-                .focused($isFocused)
-                .disabled(isBattling)
-                .onSubmit {
-                    if !inputText.isEmpty && isSoloReady {
-                        onSend()
-                    }
-                }
-            
-            // 发送按钮
-            Button {
-                onSend()
-            } label: {
-                Text(sendButtonTitle)
-                    .fontWeight(.semibold)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(sendButtonBackground)
-                    .foregroundColor(sendButtonForeground)
-                    .cornerRadius(8)
-            }
-            .buttonStyle(.plain)
-            .disabled(isBattling || !isSoloReady || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .keyboardShortcut(.return, modifiers: .command)
         }
-        .padding()
-        .background(Color(.windowBackgroundColor))
+        .frame(height: 110)
+    }
+    
+    // MARK: - Extracted Sub-views
+    
+    @State private var isSendButtonHovered = false
+    
+    private var sendButton: some View {
+        let canSend = !isBattling && isSoloReady && !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return Button {
+            onSend()
+        } label: {
+            Image(systemName: "arrow.up.circle.fill")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(canSend ? Color(hex: "#A3390E") : Color.gray.opacity(0.4))
+                .scaleEffect(isSendButtonHovered && canSend ? 1.1 : 1.0)
+                .animation(.easeInOut(duration: 0.12), value: isSendButtonHovered)
+        }
+        .buttonStyle(.plain)
+        .onHover { isSendButtonHovered = $0 }
+        .disabled(!canSend)
     }
     
     // MARK: - Computed Properties

@@ -479,10 +479,11 @@ class RemoteHostServer: ObservableObject {
         print("[RemoteHost] Received message for AI \(payload.aiId): \(text)")
 
         Task.detached(priority: .userInitiated) { [ai, text] in
+            let engine = AIStreamEngineRouter.active
             do {
-                try await SessionManager.shared.startSession(for: ai)
-                try await SessionManager.shared.sendMessage(text, to: ai)
-                _ = try await SessionManager.shared.waitForResponse(from: ai)
+                try await engine.startSession(for: ai)
+                try await engine.sendMessage(text, to: ai)
+                _ = try await engine.waitForResponse(from: ai, stableSeconds: 3.0, maxWait: 60.0)
             } catch {
                 await MainActor.run {
                     let msg = MessageDTO(

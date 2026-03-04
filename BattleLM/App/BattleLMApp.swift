@@ -1,9 +1,31 @@
 // BattleLM/App/BattleLMApp.swift
 import SwiftUI
+import CoreText
+
+/// 注册应用内嵌的自定义字体
+private func registerCustomFonts() {
+    let fontNames = ["Orbitron-VariableFont"]
+    for fontName in fontNames {
+        guard let url = Bundle.main.url(forResource: fontName, withExtension: "ttf") else {
+            print("⚠️ Font not found in bundle: \(fontName).ttf")
+            continue
+        }
+        var error: Unmanaged<CFError>?
+        if !CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error) {
+            print("⚠️ Failed to register font \(fontName): \(error?.takeRetainedValue().localizedDescription ?? "unknown")")
+        } else {
+            print("✅ Registered font: \(fontName)")
+        }
+    }
+}
 
 @main
 struct BattleLMApp: App {
     @StateObject private var appState = AppState()
+    
+    init() {
+        registerCustomFonts()
+    }
     
     var body: some Scene {
         WindowGroup {
@@ -30,18 +52,6 @@ struct BattleLMApp: App {
                     appState.showCreateGroupSheet = true
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
-            }
-            
-            // 视图菜单 - 终端切换
-            CommandGroup(after: .sidebar) {
-                Button(appState.showTerminalPanel ? "Hide Terminal" : "Show Terminal") {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        appState.showTerminalPanel.toggle()
-                    }
-                }
-                .keyboardShortcut("t", modifiers: [.command])
-                
-                Divider()
             }
             
             // 设置

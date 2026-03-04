@@ -193,7 +193,7 @@ class SessionManager: ObservableObject {
                     "-x", "120",
                     "-y", "40",
                     "-c", workDir,
-                    "/bin/zsh", "-lc", ai.type.cliCommand
+                    "/bin/zsh", "-lc", buildCLICommand(for: ai)
                 ])
 
                 // 设置无限滚动历史缓冲区（0 = 无限制）
@@ -222,13 +222,26 @@ class SessionManager: ObservableObject {
             // 启动“终端交互提示”监控（例如 Claude 的信任/权限确认）
             await startTerminalPromptMonitorIfNeeded(for: ai)
 
-            print("✅ Session started: \(sessionName) for \(ai.name) in \(workDir)")
+            print("✅ Session started: \(sessionName) for \(ai.name) in \(workDir) [model: \(ai.effectiveModel)]")
         } catch {
             await MainActor.run {
                 sessionStatus[ai.id] = .error
             }
             throw error
         }
+    }
+    
+    /// 构建 CLI 启动命令，包含用户选择的模型
+    private func buildCLICommand(for ai: AIInstance) -> String {
+        var cmd = ai.type.cliCommand  // "claude" / "codex" / "gemini" / etc.
+        
+        // 始终传递 --model 参数，确保用户选择的模型生效
+        let model = ai.effectiveModel
+        if !model.isEmpty {
+            cmd += " --model \(model)"
+        }
+        
+        return cmd
     }
     
     /// 停止 tmux 会话
@@ -247,6 +260,40 @@ class SessionManager: ObservableObject {
         }
 
         print("🛑 Session stopped: \(sessionName)")
+    }
+
+    // MARK: - Headless Session Registration
+
+    /// 注册一个"headless"会话（不启动 tmux，只更新状态）。
+    /// 用于 JSONStreamEngine：Claude 走 headless 进程时不需要 tmux，
+    /// 但仍需让 UI（绿点、isActive）正确显示。
+    func registerHeadlessSession(for ai: AIInstance) async {
+        // 如果已有 tmux 残留会话，先清理
+        let existing = await MainActor.run { activeSessions[ai.id] }
+        if let existing, existing != "__headless__" {
+            // 有残留 tmux session，先 kill 它
+            _ = try? await runTmux(["kill-session", "-t", existing])
+            await MainActor.run {
+                activeSessions.removeValue(forKey: ai.id)
+                terminalChoicePrompts.removeValue(forKey: ai.id)
+            }
+            print("🧹 Cleaned stale tmux session \(existing) for \(ai.name)")
+        }
+        
+        await MainActor.run {
+            activeSessions[ai.id] = "__headless__"
+            sessionStatus[ai.id] = .running
+        }
+        print("⚡ Headless session registered for \(ai.name) (no tmux)")
+    }
+
+    /// 取消 headless 会话注册。
+    func unregisterHeadlessSession(for ai: AIInstance) async {
+        await MainActor.run {
+            guard activeSessions[ai.id] == "__headless__" else { return }
+            activeSessions.removeValue(forKey: ai.id)
+            sessionStatus[ai.id] = .stopped
+        }
     }
 
     // MARK: - Terminal Prompts (Interactive Choice)
@@ -778,6 +825,11 @@ class SessionManager: ObservableObject {
         }
     }
 
+    /// 获取指定 AI 当前待回复的用户消息（供 JSONStreamEngine 读取）
+    func getPendingUserMessage(for aiId: UUID) async -> String? {
+        await transientState.pendingUserMessage(for: aiId)
+    }
+
     /// 发送后校验：若文本仍停留在输入区（未真正提交），自动补发 Enter。
     /// 这是一个 best-effort 的防抖机制，覆盖 Gemini/Codex/Qwen/Kimi/Claude 的偶发“Enter 吞键”场景。
     private func ensureSubmittedIfNeeded(text: String, for ai: AIInstance, sessionName: String) async {
@@ -1220,7 +1272,13 @@ class SessionManager: ObservableObject {
             return
         }
         
-        // Fallback：其他 AI 或 Claude transcript 不可用时，使用传统 capture-pane 方式
+        // 🎯 Qwen 专用路径：使用 transcript JSONL 提取（100% 可靠）
+        if ai.type == .qwen && QwenTranscriptExtractor.isTranscriptAvailable(for: ai.workingDirectory) {
+            try await streamQwenTranscript(from: ai, onUpdate: bridgedOnUpdate, stableSeconds: stableSeconds, maxWait: maxWait)
+            return
+        }
+        
+        // Fallback：其他 AI 或 transcript 不可用时，使用传统 capture-pane 方式
         try await streamWithCapturPane(from: ai, onUpdate: bridgedOnUpdate, stableSeconds: stableSeconds, maxWait: maxWait)
     }
     
@@ -1264,6 +1322,34 @@ class SessionManager: ObservableObject {
             maxWait: maxWait
         )
         await transientState.clearClaudePendingRequest(for: ai.id)
+        await transientState.clearPendingUserMessage(for: ai.id)
+    }
+    
+    /// Qwen 专用：从 transcript JSONL 流式提取响应
+    private func streamQwenTranscript(from ai: AIInstance,
+                                       onUpdate: @escaping (String, Bool, Bool) -> Void,
+                                       stableSeconds: Double,
+                                       maxWait: Double) async throws {
+        print("📜 Using Qwen Transcript Extractor for: \(ai.name)")
+        
+        // Qwen 不需要 Claude 那样的 pendingRequest context，直接用 transcript
+        guard let transcriptURL = QwenTranscriptExtractor.transcriptURL(for: ai.workingDirectory) else {
+            throw SessionError.sessionNotFound("Qwen transcript not found for \(ai.name)")
+        }
+
+        let userMessage = await transientState.pendingUserMessage(for: ai.id)
+        
+        _ = try await QwenTranscriptExtractor.streamLatestResponse(
+            transcriptURL: transcriptURL,
+            afterUserUuid: nil,
+            expectedUserText: userMessage,
+            minTimestamp: Date().addingTimeInterval(-5), // 只匹配最近 5 秒内的消息
+            onUpdate: { content, isComplete in
+                onUpdate(content, false, isComplete)
+            },
+            stableSeconds: stableSeconds,
+            maxWait: maxWait
+        )
         await transientState.clearPendingUserMessage(for: ai.id)
     }
     
@@ -1418,6 +1504,8 @@ class SessionManager: ObservableObject {
         let startTime = Date()
         var lastResponse = ""
         var lastChangeTime = Date()
+        var lastRawContent = ""
+        var lastRawChangeTime = Date()
 
         let userMessage = await transientState.pendingUserMessage(for: ai.id)
 
@@ -1427,12 +1515,22 @@ class SessionManager: ObservableObject {
                 let response = extractResponse(from: content, for: ai, userMessage: userMessage)
                 let trimmedResponse = response.trimmingCharacters(in: .whitespacesAndNewlines)
 
+                // 关键修复：除了“提取后的回复”之外，也要观察原始终端内容是否仍在变化。
+                // 否则 AI 可能还在工具调用/检索阶段（raw 在变），但 response 提取文本暂时不变，
+                // 会被误判为“稳定完成”并提前进入下一轮。
+                if content != lastRawContent {
+                    lastRawContent = content
+                    lastRawChangeTime = Date()
+                }
+
                 if response != lastResponse {
                     lastResponse = response
                     lastChangeTime = Date()
                 } else if !trimmedResponse.isEmpty, !isLikelyInProgressResponse(trimmedResponse, for: ai) {
                     // 响应已开始且不处于“处理中”，检查稳定性
-                    if Date().timeIntervalSince(lastChangeTime) >= stableSeconds {
+                    let responseStable = Date().timeIntervalSince(lastChangeTime) >= stableSeconds
+                    let terminalStable = Date().timeIntervalSince(lastRawChangeTime) >= stableSeconds
+                    if responseStable && terminalStable {
                         await transientState.clearPendingUserMessage(for: ai.id)
                         if !trimmedResponse.isEmpty {
                             let aiEvent = MessageDTO(
@@ -1489,7 +1587,14 @@ class SessionManager: ObservableObject {
         case .codex:
             return tail.contains("thinking") ||
                 tail.contains("analyzing") ||
-                tail.contains("processing")
+                tail.contains("processing") ||
+                tail.contains("explored") ||
+                tail.contains("read ") ||
+                tail.contains("search") ||
+                tail.contains("grep") ||
+                tail.contains("rg ") ||
+                tail.contains("running") ||
+                tail.contains("executing")
         case .claude:
             return tail.contains("thinking") ||
                 tail.contains("envisioning") ||
@@ -1573,8 +1678,8 @@ class SessionManager: ObservableObject {
         }
 
         // Kimi 的提示符不是 ">"，而是类似 "<username>✨" 的形式；例如：
-        // - 用户输入行： "user✨ 1+1?"
-        // - 等待输入提示： "user✨"
+        // - 用户输入行： "yang✨ 1+1?"
+        // - 等待输入提示： "yang✨"
         // 若只依赖 userPrefixes（">"）会找不到本轮用户输入行，进而永远提取不到回复。
         func kimiPromptPrefixIndex(in line: String) -> String.Index? {
             guard let sparkle = line.firstIndex(of: "✨") else { return nil }
@@ -1777,7 +1882,7 @@ class SessionManager: ObservableObject {
                 break
             }
             
-            // 停止条件：Kimi 回到主提示符（例如 "user✨"）
+            // 停止条件：Kimi 回到主提示符（例如 "yang✨"）
             if isKimiBarePromptLine(trimmed) {
                 break
             }

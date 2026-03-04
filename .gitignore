@@ -1,9 +1,10 @@
 # Xcode
 .DS_Store
 *.xcuserstate
-*.xcworkspace
 xcuserdata/
 DerivedData/
+DerivedData-*/
+.DerivedData/
 .build/
 .swiftpm/
 
@@ -14,15 +15,15 @@ build/
 *.dSYM.zip
 *.dSYM
 
-# CocoaPods
-Pods/
+# Temporary/cache
+.tmp/
+.cache/
+.home/
+.sandbox_home/
+.sandboxhome/
 
-# Carthage
-Carthage/Build/
-
-# SPM
-.build/
-Package.resolved
+# Node
+node_modules/
 
 # IDE
 .idea/

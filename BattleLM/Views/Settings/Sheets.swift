@@ -16,6 +16,9 @@ struct AddAISheet: View {
     @State private var scrollOffset: CGFloat = 0
     @State private var showDuplicateAlert: Bool = false
     @State private var showInstallHelp: Bool = false
+    @State private var isBrowseHovered: Bool = false
+    @State private var isCancelHovered: Bool = false
+    @State private var isAddHovered: Bool = false
 
     private var selectedCLIStatus: CLIStatus? {
         appState.cliStatusCache[selectedType]
@@ -37,7 +40,7 @@ struct AddAISheet: View {
                     ScrollViewReader { proxy in
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 16) {
-                                ForEach(Array(AIType.allCases.enumerated()), id: \.element.id) { index, type in
+                                ForEach(Array(AIType.userVisibleCases.enumerated()), id: \.element.id) { index, type in
                                     AITypeCard(
                                         type: type,
                                         isSelected: selectedType == type
@@ -53,10 +56,10 @@ struct AddAISheet: View {
                         }
                         .onChange(of: scrollOffset) { newValue in
                             // 根据滚动条位置滚动到对应的卡片
-                            let cardCount = AIType.allCases.count
+                            let cardCount = AIType.userVisibleCases.count
                             let targetIndex = Int(newValue * CGFloat(cardCount - 1))
                             let clampedIndex = max(0, min(cardCount - 1, targetIndex))
-                            if let targetType = AIType.allCases[safe: clampedIndex] {
+                            if let targetType = AIType.userVisibleCases[safe: clampedIndex] {
                                 withAnimation(.easeOut(duration: 0.2)) {
                                     proxy.scrollTo(targetType.id, anchor: .leading)
                                 }
@@ -67,7 +70,7 @@ struct AddAISheet: View {
                     // 自定义滚动条轨道（始终预留空间）
                     GeometryReader { outerGeo in
                         let totalWidth = outerGeo.size.width
-                        let cardCount = CGFloat(AIType.allCases.count)
+                        let cardCount = CGFloat(AIType.userVisibleCases.count)
                         let visibleRatio = min(1.0, 4.0 / cardCount)
                         let thumbWidth = max(60, totalWidth * visibleRatio)
                         let maxOffset = totalWidth - thumbWidth
@@ -194,6 +197,14 @@ struct AddAISheet: View {
                         pickWorkingDirectory()
                     }
                     .buttonStyle(.bordered)
+                    .scaleEffect(isBrowseHovered ? 1.03 : 1.0)
+                    .shadow(
+                        color: isBrowseHovered ? Color.accentColor.opacity(0.20) : .clear,
+                        radius: isBrowseHovered ? 8 : 0,
+                        y: 2
+                    )
+                    .animation(.easeOut(duration: 0.12), value: isBrowseHovered)
+                    .onHover { isBrowseHovered = $0 }
                 }
                 
                 Text("The AI CLI will run in this directory")
@@ -209,6 +220,14 @@ struct AddAISheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+                .scaleEffect(isCancelHovered ? 1.03 : 1.0)
+                .shadow(
+                    color: isCancelHovered ? Color.accentColor.opacity(0.18) : .clear,
+                    radius: isCancelHovered ? 7 : 0,
+                    y: 2
+                )
+                .animation(.easeOut(duration: 0.12), value: isCancelHovered)
+                .onHover { isCancelHovered = $0 }
                 
                 Spacer()
                 
@@ -232,7 +251,7 @@ struct AddAISheet: View {
                     if let ai = newAI {
                         Task {
                             do {
-                                try await SessionManager.shared.startSession(for: ai)
+                                try await AIStreamEngineRouter.active.startSession(for: ai)
                                 await MainActor.run {
                                     appState.setAIActive(true, for: ai.id)
                                 }
@@ -247,6 +266,14 @@ struct AddAISheet: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(workingDirectory.isEmpty || selectedCLIStatus == nil || selectedCLIStatus == .notInstalled || selectedCLIStatus == .broken)
+                .scaleEffect(isAddHovered ? 1.03 : 1.0)
+                .shadow(
+                    color: isAddHovered ? Color.accentColor.opacity(0.25) : .clear,
+                    radius: isAddHovered ? 8 : 0,
+                    y: 2
+                )
+                .animation(.easeOut(duration: 0.12), value: isAddHovered)
+                .onHover { isAddHovered = $0 }
             }
         }
         .padding(24)
@@ -345,6 +372,9 @@ struct CreateGroupSheet: View {
     }
     
     @State private var selectedMode: CreateMode = .quickStart
+    @State private var isCancelHovered: Bool = false
+    @State private var isCreateHovered: Bool = false
+    @State private var isBrowseHovered: Bool = false
     
     // Quick Start mode states
     @State private var selectedAITypes: Set<AIType> = []
@@ -385,6 +415,14 @@ struct CreateGroupSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+                .scaleEffect(isCancelHovered ? 1.03 : 1.0)
+                .shadow(
+                    color: isCancelHovered ? Color.accentColor.opacity(0.18) : .clear,
+                    radius: isCancelHovered ? 7 : 0,
+                    y: 2
+                )
+                .animation(.easeOut(duration: 0.12), value: isCancelHovered)
+                .onHover { isCancelHovered = $0 }
                 
                 Spacer()
                 
@@ -399,6 +437,14 @@ struct CreateGroupSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(selectedMode == .quickStart ? !canStartQuickStart : selectedAIIds.isEmpty)
+                .scaleEffect(isCreateHovered ? 1.03 : 1.0)
+                .shadow(
+                    color: isCreateHovered ? Color.accentColor.opacity(0.25) : .clear,
+                    radius: isCreateHovered ? 8 : 0,
+                    y: 2
+                )
+                .animation(.easeOut(duration: 0.12), value: isCreateHovered)
+                .onHover { isCreateHovered = $0 }
             }
         }
         .padding(24)
@@ -432,7 +478,7 @@ struct CreateGroupSheet: View {
                     ScrollViewReader { proxy in
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 12) {
-                                ForEach(Array(AIType.allCases.enumerated()), id: \.element.id) { index, type in
+                                ForEach(Array(AIType.userVisibleCases.enumerated()), id: \.element.id) { index, type in
                                     QuickStartAICard(
                                         type: type,
                                         isSelected: selectedAITypes.contains(type),
@@ -452,7 +498,7 @@ struct CreateGroupSheet: View {
                     }
                     
                     // 简化的滚动指示器（只在有多于4个AI类型时显示）
-                    if AIType.allCases.count > 4 {
+                    if AIType.userVisibleCases.count > 4 {
                         HStack {
                             Spacer()
                             Text("← Scroll to see more →")
@@ -478,6 +524,14 @@ struct CreateGroupSheet: View {
                         pickWorkingDirectory()
                     }
                     .buttonStyle(.bordered)
+                    .scaleEffect(isBrowseHovered ? 1.03 : 1.0)
+                    .shadow(
+                        color: isBrowseHovered ? Color.accentColor.opacity(0.20) : .clear,
+                        radius: isBrowseHovered ? 8 : 0,
+                        y: 2
+                    )
+                    .animation(.easeOut(duration: 0.12), value: isBrowseHovered)
+                    .onHover { isBrowseHovered = $0 }
                 }
                 
                 Text("All AIs will run in this directory")
@@ -581,7 +635,7 @@ struct CreateGroupSheet: View {
                     for ai in createdAIs {
                         group.addTask {
                             do {
-                                try await SessionManager.shared.startSession(for: ai)
+                                try await AIStreamEngineRouter.active.startSession(for: ai)
                                 await MainActor.run {
                                     appState.setAIActive(true, for: ai.id)
                                 }
@@ -733,7 +787,7 @@ struct AISelectionRow: View {
 // MARK: - Settings Tab Enum
 enum SettingsTab: String, CaseIterable, Identifiable {
     case appearance = "Appearance"
-    case terminal = "Terminal"
+    case usage = "Usage"
     case shortcuts = "Shortcuts"
     
     var id: String { rawValue }
@@ -741,7 +795,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var iconName: String {
         switch self {
         case .appearance: return "paintbrush"
-        case .terminal: return "terminal"
+        case .usage: return "chart.bar.fill"
         case .shortcuts: return "keyboard"
         }
     }
@@ -752,6 +806,7 @@ struct SettingsSheet: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.colorScheme) var colorScheme
     @State private var selectedTab: SettingsTab = .appearance
+    @State private var isCloseHovered = false
     
     var body: some View {
         HStack(spacing: 0) {
@@ -770,7 +825,7 @@ struct SettingsSheet: View {
             }
             .padding(.vertical, 16)
             .padding(.horizontal, 8)
-            .frame(width: 160)
+            .frame(width: 190)
             .background(Color(.controlBackgroundColor))
             
             Divider()
@@ -789,8 +844,10 @@ struct SettingsSheet: View {
                         Image(systemName: "xmark.circle.fill")
                             .font(.title2)
                             .foregroundColor(.secondary)
+                            .opacity(isCloseHovered ? 0.7 : 1.0)
                     }
                     .buttonStyle(.plain)
+                    .onHover { isCloseHovered = $0 }
                 }
                 .padding()
                 
@@ -802,8 +859,8 @@ struct SettingsSheet: View {
                         switch selectedTab {
                         case .appearance:
                             appearanceContent
-                        case .terminal:
-                            terminalContent
+                        case .usage:
+                            TokenUsageView(monitor: appState.tokenUsageMonitor)
                         case .shortcuts:
                             shortcutsContent
                         }
@@ -813,7 +870,7 @@ struct SettingsSheet: View {
                 }
             }
         }
-        .frame(width: 650, height: 500)
+        .frame(width: 750, height: 560)
         .onChange(of: colorScheme) { _ in
             // 当系统 colorScheme 变化时（用户选择"跟随系统"模式后，系统主题切换）
             // 需要同步更新终端主题
@@ -843,34 +900,6 @@ struct SettingsSheet: View {
         }
     }
     
-    // MARK: - Terminal Tab
-    private var terminalContent: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Terminal Theme")
-                .font(.headline)
-            
-            Text(themeGroupLabel)
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-            
-            LazyVGrid(columns: [
-                GridItem(.flexible()),
-                GridItem(.flexible()),
-                GridItem(.flexible())
-            ], spacing: 10) {
-                ForEach(availableThemes) { theme in
-                    ThemePreviewCard(
-                        theme: theme,
-                        isSelected: appState.terminalTheme.id == theme.id
-                    ) {
-                        appState.terminalTheme = theme
-                    }
-                }
-            }
-        }
-    }
-    
-    
     // MARK: - Shortcuts Tab
     private var shortcutsContent: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -884,21 +913,6 @@ struct SettingsSheet: View {
     }
     
     // MARK: - Helpers
-    private var availableThemes: [TerminalTheme] {
-        TerminalTheme.themes(for: appState.appAppearance, colorScheme: colorScheme)
-    }
-    
-    private var themeGroupLabel: String {
-        switch appState.appAppearance {
-        case .dark:
-            return "Dark Themes"
-        case .light:
-            return "Light Themes"
-        case .system:
-            return colorScheme == .dark ? "Dark Themes (System)" : "Light Themes (System)"
-        }
-    }
-    
     private func updateTerminalThemeIfNeeded() {
         // 当 App 主题切换时，强制重置终端主题为对应模式的默认主题
         let shouldUseDark: Bool
@@ -923,6 +937,7 @@ struct SettingsTabButton: View {
     let tab: SettingsTab
     let isSelected: Bool
     let action: () -> Void
+    @State private var isHovered = false
     
     var body: some View {
         Button(action: action) {
@@ -935,11 +950,16 @@ struct SettingsTabButton: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+            .background(
+                isSelected
+                    ? Color.accentColor.opacity(0.15)
+                    : (isHovered ? Color.primary.opacity(0.06) : Color.clear)
+            )
             .foregroundColor(isSelected ? .accentColor : .primary)
             .cornerRadius(8)
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
     }
 }
 
@@ -963,6 +983,7 @@ struct AppearanceButton: View {
     let appearance: AppAppearance
     let isSelected: Bool
     let onSelect: () -> Void
+    @State private var isHovered = false
     
     var body: some View {
         Button(action: onSelect) {
@@ -1000,7 +1021,11 @@ struct AppearanceButton: View {
                     .fontWeight(isSelected ? .semibold : .regular)
             }
             .padding(8)
-            .background(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
+            .background(
+                isSelected
+                    ? Color.accentColor.opacity(0.1)
+                    : (isHovered ? Color.primary.opacity(0.05) : Color.clear)
+            )
             .cornerRadius(10)
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
@@ -1008,6 +1033,7 @@ struct AppearanceButton: View {
             )
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
     }
 }
 
@@ -1029,48 +1055,6 @@ struct ShortcutRow: View {
                 .background(Color(.controlBackgroundColor))
                 .cornerRadius(4)
         }
-    }
-}
-
-/// 主题预览卡片
-struct ThemePreviewCard: View {
-    let theme: TerminalTheme
-    let isSelected: Bool
-    let onSelect: () -> Void
-    
-    var body: some View {
-        Button(action: onSelect) {
-            VStack(spacing: 0) {
-                // 预览区域
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("$ codex")
-                        .foregroundColor(theme.promptColor.color)
-                    Text("✦ Hello")
-                        .foregroundColor(theme.responseColor.color)
-                    Text("// ok")
-                        .foregroundColor(theme.commentColor.color)
-                }
-                .font(.system(.caption2, design: .monospaced))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(6)
-                .background(theme.backgroundColor.color)
-                
-                // 名称
-                Text(theme.name)
-                    .font(.caption2)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity)
-                    .background(Color(.controlBackgroundColor))
-            }
-            .cornerRadius(6)
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(isSelected ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: isSelected ? 2 : 1)
-            )
-        }
-        .buttonStyle(.plain)
     }
 }
 

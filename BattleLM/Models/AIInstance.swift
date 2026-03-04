@@ -13,6 +13,8 @@ struct AIInstance: Identifiable, Codable, Equatable, Hashable {
     var isEliminated: Bool
     var eliminationScore: Double
     var messages: [Message] = []   // 1:1 对话消息历史
+    var selectedModel: String?     // 用户选择的模型（nil = 使用默认）
+    var selectedReasoningEffort: ReasoningEffort?  // 用户选择的推理深度（nil = 使用模型默认）
     
     // 手动实现 Hashable，只基于 id
     func hash(into hasher: inout Hasher) {
@@ -34,6 +36,39 @@ struct AIInstance: Identifiable, Codable, Equatable, Hashable {
         self.isEliminated = false
         self.eliminationScore = 0
         self.messages = []
+        self.selectedModel = nil
+        self.selectedReasoningEffort = nil
+    }
+    
+    /// 当前选中的 ModelOption
+    private var selectedModelOption: ModelOption? {
+        let modelId = selectedModel ?? type.defaultModelId
+        return type.availableModels.first(where: { $0.id == modelId })
+    }
+    
+    /// 当前生效的模型 ID（传给 API 的真实 ID）
+    var effectiveModel: String {
+        selectedModelOption?.actualModelId ?? type.defaultModelId
+    }
+    
+    /// 是否开启 thinking 模式
+    var thinkingEnabled: Bool {
+        selectedModelOption?.enableThinking ?? false
+    }
+    
+    /// 当前生效的推理深度
+    var effectiveEffort: ReasoningEffort? {
+        guard let model = selectedModelOption, model.hasReasoningEffort else { return nil }
+        return selectedReasoningEffort ?? model.defaultEffort
+    }
+    
+    /// 当前模型的显示名称（含推理深度）
+    var modelDisplayName: String {
+        let name = selectedModelOption?.displayName ?? effectiveModel
+        if let effort = effectiveEffort {
+            return "\(name) · \(effort.shortName)"
+        }
+        return name
     }
     
     /// 获取 AI 的颜色

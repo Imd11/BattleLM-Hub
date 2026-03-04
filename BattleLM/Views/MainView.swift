@@ -26,6 +26,42 @@ struct MainView: View {
                     AIChatView(ai: ai)
                         .id(ai.id)
                         .frame(minWidth: 400)
+                    
+                    // 右侧文件树面板（折叠式）
+                    if appState.showTerminalPanel {
+                        Divider()
+                        
+                        VStack(spacing: 0) {
+                            // 文件树标题栏
+                            HStack {
+                                Image(systemName: "folder.fill")
+                                    .foregroundColor(.secondary)
+                                    .font(.caption)
+                                Text("\(ai.name) Files")
+                                    .font(.system(size: 12, weight: .medium))
+                                Spacer()
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.2)) {
+                                        appState.showTerminalPanel = false
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color(.windowBackgroundColor))
+                            
+                            Divider()
+                            
+                            FileTreeView(workingDirectory: ai.workingDirectory)
+                        }
+                        .frame(width: 260)
+                        .transition(.move(edge: .trailing))
+                    }
                 } else if appState.selectedGroupChat != nil {
                     // 群聊
                     ChatView()
@@ -34,22 +70,6 @@ struct MainView: View {
                     // 空状态
                     EmptyStateView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                
-                // AI 终端区域（仅在群聊或 1:1 时显示）
-                if appState.showTerminalPanel && (appState.selectedAI != nil || appState.selectedGroupChat != nil) {
-                    // 可拖动分割线
-                    ResizableDivider(width: $terminalWidth, minWidth: minTerminalWidth, maxWidth: maxTerminalWidth)
-                    
-                    if let ai = appState.selectedAI {
-                        // 单个 AI 终端 - 保持 WebView 复用，避免切换时白屏闪烁
-                        SingleTerminalView(ai: ai)
-                            .frame(width: terminalWidth)
-                    } else {
-                        // 多 AI 终端
-                        TerminalPanelView()
-                            .frame(width: terminalWidth)
-                    }
                 }
             }
         }
@@ -69,23 +89,24 @@ struct MainView: View {
             PairingQRView()
         }
         .toolbar {
-            // 终端面板切换按钮 - 窗口右上角
-            ToolbarItem(placement: .primaryAction) {
-                Spacer()
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        appState.showTerminalPanel.toggle()
-                    }
-                } label: {
-                    Image(systemName: appState.showTerminalPanel ? "sidebar.trailing" : "sidebar.trailing")
-                        .symbolVariant(appState.showTerminalPanel ? .none : .none)
-                        .foregroundColor(appState.showTerminalPanel ? .accentColor : .secondary)
+            if appState.selectedAI != nil {
+                // Keep this spacer item to push the toggle into the trailing toolbar area on macOS.
+                ToolbarItem(placement: .primaryAction) {
+                    Spacer()
                 }
-                .help(appState.showTerminalPanel ? "Hide Terminal (⌘T)" : "Show Terminal (⌘T)")
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            appState.showTerminalPanel.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "sidebar.trailing")
+                    }
+                    .help(appState.showTerminalPanel ? "Hide Files" : "Show Files")
+                }
             }
         }
+
         .onChange(of: colorScheme) { newScheme in
             // 当系统 colorScheme 变化时，同步更新终端主题
             let shouldUseDark: Bool
@@ -414,6 +435,8 @@ struct SingleTerminalView: View {
 /// 空状态视图
 struct EmptyStateView: View {
     @EnvironmentObject var appState: AppState
+    @State private var isAddAIHovered = false
+    @State private var isCreateGroupHovered = false
     
     var body: some View {
         VStack(spacing: 20) {
@@ -421,6 +444,7 @@ struct EmptyStateView: View {
                 .resizable()
                 .scaledToFit()
                 .frame(width: 80, height: 80)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
             
             Text("Welcome to BattleLM")
                 .font(.title)
@@ -436,6 +460,14 @@ struct EmptyStateView: View {
                     Label("Add AI", systemImage: "plus.circle")
                 }
                 .buttonStyle(.borderedProminent)
+                .scaleEffect(isAddAIHovered ? 1.03 : 1.0)
+                .shadow(
+                    color: isAddAIHovered ? Color.accentColor.opacity(0.25) : .clear,
+                    radius: isAddAIHovered ? 8 : 0,
+                    y: 2
+                )
+                .animation(.easeOut(duration: 0.12), value: isAddAIHovered)
+                .onHover { isAddAIHovered = $0 }
                 
                 Button {
                     appState.showCreateGroupSheet = true
@@ -443,7 +475,14 @@ struct EmptyStateView: View {
                     Label("Create Group", systemImage: "bubble.left.and.bubble.right")
                 }
                 .buttonStyle(.bordered)
-                .disabled(appState.aiInstances.isEmpty)
+                .scaleEffect(isCreateGroupHovered ? 1.03 : 1.0)
+                .shadow(
+                    color: isCreateGroupHovered ? Color.accentColor.opacity(0.22) : .clear,
+                    radius: isCreateGroupHovered ? 8 : 0,
+                    y: 2
+                )
+                .animation(.easeOut(duration: 0.12), value: isCreateGroupHovered)
+                .onHover { isCreateGroupHovered = $0 }
             }
         }
         .offset(y: -40)

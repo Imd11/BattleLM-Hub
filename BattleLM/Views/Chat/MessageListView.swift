@@ -54,7 +54,7 @@ struct MessageBubbleView: View {
     
     /// 消息气泡最大宽度（容器宽度的 70%）
     var maxBubbleWidth: CGFloat {
-        max(containerWidth * 0.7, 200)  // 最小 200
+        max(containerWidth * 0.60, 200)  // 最小 200
     }
     
     var body: some View {
@@ -87,7 +87,7 @@ struct MessageBubbleView: View {
         HStack(alignment: .top, spacing: 12) {
             // 左侧空白（10%）
             Spacer()
-                .frame(width: containerWidth * 0.10)
+                .frame(width: containerWidth * 0.15)
             
             // 用户消息额外左边空白（推向右边）
             if isUser {
@@ -114,7 +114,8 @@ struct MessageBubbleView: View {
                 }
                 
                 // 消息内容（带右键菜单）
-                Text(message.content)
+                Text(Self.markdownText(message.content))
+                    .textSelection(.enabled)
                     .padding(12)
                     .background(bubbleBackground)
                     .foregroundColor(bubbleTextColor)
@@ -171,7 +172,7 @@ struct MessageBubbleView: View {
             
             // 右侧空白（10%）
             Spacer()
-                .frame(width: containerWidth * 0.10)
+                .frame(width: containerWidth * 0.15)
         }
     }
     
@@ -232,6 +233,15 @@ struct MessageBubbleView: View {
     
     private var bubbleTextColor: Color {
         isUser ? .white : .primary
+    }
+
+    /// Markdown → AttributedString；解析失败时回退为纯文本
+    static func markdownText(_ raw: String) -> AttributedString {
+        if let md = try? AttributedString(markdown: raw,
+                                           options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            return md
+        }
+        return AttributedString(raw)
     }
 }
 
