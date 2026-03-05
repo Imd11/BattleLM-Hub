@@ -74,11 +74,14 @@ class JSONStreamEngine: AIStreamEngine {
     static let shared = JSONStreamEngine()
 
     private let fallback = LegacyTmuxEngine()
+    private let remoteBroadcaster = SessionManager.shared
 
     /// 正在运行的 headless 进程 [AI ID: Process]
     private var activeProcesses: [UUID: Process] = [:]
     /// Headless 模式下的待发消息 [AI ID: Message]
     private var pendingMessages: [UUID: String] = [:]
+    /// Headless 模式下的“本轮 assistant 消息”占位 id（用于让 iOS 端稳定更新同一条气泡）
+    private var pendingAssistantMessageIds: [UUID: UUID] = [:]
     private let lock = NSLock()
 
     private init() {}
@@ -145,6 +148,18 @@ class JSONStreamEngine: AIStreamEngine {
     func sendMessage(_ message: String, to ai: AIInstance) async throws {
         if supportsHeadless(ai) {
             lock.withLock { pendingMessages[ai.id] = message }
+
+            // iOS 端不会本地回显用户消息，必须由 Mac 主机广播。
+            // LegacyTmuxEngine 会在 SessionManager.sendMessage 内广播；headless 模式需要在这里补齐。
+            let userEvent = MessageDTO(
+                id: UUID(),
+                senderId: ai.id,
+                senderType: "user",
+                senderName: "You",
+                content: message,
+                timestamp: Date()
+            )
+            remoteBroadcaster.broadcastToRemote(aiId: ai.id, message: userEvent, isStreaming: false)
             return
         }
         try await fallback.sendMessage(message, to: ai)
@@ -288,6 +303,11 @@ class JSONStreamEngine: AIStreamEngine {
         let firstTokenTime = Date()
         var accumulatedText = ""
         var receivedFirstToken = false
+        let assistantMessageId = lock.withLock {
+            let id = UUID()
+            pendingAssistantMessageIds[ai.id] = id
+            return id
+        }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             var buffer = ""
@@ -329,11 +349,29 @@ class JSONStreamEngine: AIStreamEngine {
                                 let latency = Date().timeIntervalSince(firstTokenTime)
                                 print("⚡ AgentSDK first token in \(String(format: "%.0f", latency * 1000))ms for \(ai.name)")
                             }
+                            let aiEvent = MessageDTO(
+                                id: assistantMessageId,
+                                senderId: ai.id,
+                                senderType: "ai",
+                                senderName: ai.name,
+                                content: accumulatedText,
+                                timestamp: Date()
+                            )
+                            self.remoteBroadcaster.broadcastToRemote(aiId: ai.id, message: aiEvent, isStreaming: true)
                             DispatchQueue.main.async {
                                 onUpdate(accumulatedText, false, false)
                             }
 
                         case .done:
+                            let aiEvent = MessageDTO(
+                                id: assistantMessageId,
+                                senderId: ai.id,
+                                senderType: "ai",
+                                senderName: ai.name,
+                                content: accumulatedText,
+                                timestamp: Date()
+                            )
+                            self.remoteBroadcaster.broadcastToRemote(aiId: ai.id, message: aiEvent, isStreaming: false)
                             DispatchQueue.main.async {
                                 onUpdate(accumulatedText, false, true)
                             }
@@ -344,6 +382,15 @@ class JSONStreamEngine: AIStreamEngine {
                             // 如果已经有文本输出，追加错误信息但不 fail
                             if !accumulatedText.isEmpty {
                                 accumulatedText += "\n\n⚠️ \(msg)"
+                                let aiEvent = MessageDTO(
+                                    id: assistantMessageId,
+                                    senderId: ai.id,
+                                    senderType: "ai",
+                                    senderName: ai.name,
+                                    content: accumulatedText,
+                                    timestamp: Date()
+                                )
+                                self.remoteBroadcaster.broadcastToRemote(aiId: ai.id, message: aiEvent, isStreaming: false)
                                 DispatchQueue.main.async {
                                     onUpdate(accumulatedText, false, true)
                                 }
@@ -412,6 +459,18 @@ class JSONStreamEngine: AIStreamEngine {
                             : accumulatedText
                         onUpdate(text, false, true)
                     }
+                    let finalText = accumulatedText.isEmpty
+                        ? "⚠️ Claude 响应超时（\(Int(maxWait))秒），请重试。"
+                        : accumulatedText
+                    let aiEvent = MessageDTO(
+                        id: assistantMessageId,
+                        senderId: ai.id,
+                        senderType: "ai",
+                        senderName: ai.name,
+                        content: finalText,
+                        timestamp: Date()
+                    )
+                    self.remoteBroadcaster.broadcastToRemote(aiId: ai.id, message: aiEvent, isStreaming: false)
                     resumeOnce(.success(()))
                 }
             } catch {
@@ -452,6 +511,11 @@ class JSONStreamEngine: AIStreamEngine {
         var accumulatedText = ""
         var receivedFirstToken = false
         let isGemini = (ai.type == .gemini)
+        let assistantMessageId = lock.withLock {
+            let id = UUID()
+            pendingAssistantMessageIds[ai.id] = id
+            return id
+        }
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             var buffer = ""
@@ -495,11 +559,29 @@ class JSONStreamEngine: AIStreamEngine {
                                 let latency = Date().timeIntervalSince(firstTokenTime)
                                 print("⚡ \(cliName) first token in \(String(format: "%.0f", latency * 1000))ms for \(ai.name)")
                             }
+                            let aiEvent = MessageDTO(
+                                id: assistantMessageId,
+                                senderId: ai.id,
+                                senderType: "ai",
+                                senderName: ai.name,
+                                content: accumulatedText,
+                                timestamp: Date()
+                            )
+                            self.remoteBroadcaster.broadcastToRemote(aiId: ai.id, message: aiEvent, isStreaming: true)
                             DispatchQueue.main.async {
                                 onUpdate(accumulatedText, false, false)
                             }
 
                         case .done:
+                            let aiEvent = MessageDTO(
+                                id: assistantMessageId,
+                                senderId: ai.id,
+                                senderType: "ai",
+                                senderName: ai.name,
+                                content: accumulatedText,
+                                timestamp: Date()
+                            )
+                            self.remoteBroadcaster.broadcastToRemote(aiId: ai.id, message: aiEvent, isStreaming: false)
                             DispatchQueue.main.async {
                                 onUpdate(accumulatedText, false, true)
                             }
@@ -509,6 +591,15 @@ class JSONStreamEngine: AIStreamEngine {
                         case .error(let msg):
                             if !accumulatedText.isEmpty {
                                 accumulatedText += "\n\n⚠️ \(msg)"
+                                let aiEvent = MessageDTO(
+                                    id: assistantMessageId,
+                                    senderId: ai.id,
+                                    senderType: "ai",
+                                    senderName: ai.name,
+                                    content: accumulatedText,
+                                    timestamp: Date()
+                                )
+                                self.remoteBroadcaster.broadcastToRemote(aiId: ai.id, message: aiEvent, isStreaming: false)
                                 DispatchQueue.main.async {
                                     onUpdate(accumulatedText, false, true)
                                 }
@@ -556,6 +647,18 @@ class JSONStreamEngine: AIStreamEngine {
                             : accumulatedText
                         onUpdate(text, false, true)
                     }
+                    let finalText = accumulatedText.isEmpty
+                        ? "⚠️ \(cliName) 响应超时（\(Int(maxWait))秒），请重试。"
+                        : accumulatedText
+                    let aiEvent = MessageDTO(
+                        id: assistantMessageId,
+                        senderId: ai.id,
+                        senderType: "ai",
+                        senderName: ai.name,
+                        content: finalText,
+                        timestamp: Date()
+                    )
+                    self.remoteBroadcaster.broadcastToRemote(aiId: ai.id, message: aiEvent, isStreaming: false)
                     resumeOnce(.success(()))
                 }
             } catch {
@@ -785,7 +888,10 @@ class JSONStreamEngine: AIStreamEngine {
     }
 
     private func unregisterProcess(for aiId: UUID) {
-        lock.withLock { _ = activeProcesses.removeValue(forKey: aiId) }
+        lock.withLock {
+            _ = activeProcesses.removeValue(forKey: aiId)
+            pendingAssistantMessageIds.removeValue(forKey: aiId)
+        }
     }
 
     private func cancelProcess(for aiId: UUID) {
@@ -794,6 +900,7 @@ class JSONStreamEngine: AIStreamEngine {
                 proc.terminate()
             }
             activeProcesses.removeValue(forKey: aiId)
+            pendingAssistantMessageIds.removeValue(forKey: aiId)
         }
     }
 }

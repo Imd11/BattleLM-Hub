@@ -20,6 +20,7 @@ class RemoteHostServer: ObservableObject {
     private var eventSeq = 0
     private weak var appState: AppState?
     private var cancellables: Set<AnyCancellable> = []
+    private var lastTerminalPromptSignatures: [UUID: String] = [:]
     
     private let port: UInt16 = 8765
     
@@ -28,6 +29,7 @@ class RemoteHostServer: ObservableObject {
     func bind(appState: AppState) {
         self.appState = appState
         cancellables.removeAll()
+        lastTerminalPromptSignatures.removeAll()
 
         appState.$aiInstances
             .receive(on: DispatchQueue.main)
@@ -49,6 +51,40 @@ class RemoteHostServer: ObservableObject {
                 self?.broadcastAISnapshot()
             }
             .store(in: &cancellables)
+
+        SessionManager.shared.$terminalChoicePrompts
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] prompts in
+                self?.broadcastTerminalPrompts(prompts)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func terminalPromptSignature(for prompt: TerminalChoicePrompt) -> String {
+        let options = prompt.options.map { "\($0.number):\($0.label)" }.joined(separator: "|")
+        return "\(prompt.title)|\(prompt.body ?? "")|\(prompt.hint ?? "")|\(options)"
+    }
+
+    private func broadcastTerminalPrompts(_ prompts: [UUID: TerminalChoicePrompt]) {
+        // Broadcast only when a prompt changes; avoid sending the same prompt every polling tick.
+        for (aiId, prompt) in prompts {
+            let signature = terminalPromptSignature(for: prompt)
+            if lastTerminalPromptSignatures[aiId] == signature { continue }
+            lastTerminalPromptSignatures[aiId] = signature
+
+            let payload = TerminalPromptPayload(
+                aiId: aiId,
+                title: prompt.title,
+                body: prompt.body,
+                hint: prompt.hint,
+                options: prompt.options.map { TerminalPromptPayload.PromptOption(number: $0.number, label: $0.label) }
+            )
+            broadcast(type: "terminalPrompt", payload: payload)
+        }
+
+        // Cleanup signatures for prompts that have disappeared.
+        let activeIds = Set(prompts.keys)
+        lastTerminalPromptSignatures = lastTerminalPromptSignatures.filter { activeIds.contains($0.key) }
     }
     
     struct ClientConnection {
@@ -503,9 +539,30 @@ class RemoteHostServer: ObservableObject {
     
     private func handleTerminalChoice(_ data: Data) {
         guard let payload = try? JSONDecoder().decode(TerminalChoicePayload.self, from: data) else { return }
-        
-        // TODO: 转发给 SessionManager
+        guard let appState, let ai = appState.aiInstance(for: payload.aiId) else { return }
+
         print("[RemoteHost] Terminal choice for AI \(payload.aiId): \(payload.choice)")
+
+        Task.detached(priority: .userInitiated) { [ai, payload] in
+            do {
+                // Ensure tmux session exists (Claude headless should not be sending prompts).
+                try await SessionManager.shared.startSession(for: ai)
+                try await SessionManager.shared.submitTerminalChoice(payload.choice, for: ai)
+            } catch {
+                await MainActor.run {
+                    let msg = MessageDTO(
+                        id: UUID(),
+                        senderId: ai.id,
+                        senderType: "system",
+                        senderName: "System",
+                        content: "Choice failed: \(error.localizedDescription)",
+                        timestamp: Date()
+                    )
+                    let response = AIResponsePayload(aiId: ai.id, message: msg, isStreaming: false)
+                    RemoteHostServer.shared.broadcast(type: "aiResponse", payload: response)
+                }
+            }
+        }
     }
     
     private func handleSyncRequest(_ data: Data, to conn: NWConnection) {

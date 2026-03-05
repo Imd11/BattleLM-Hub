@@ -159,6 +159,8 @@ async function main() {
         };
         if (model) threadOptions.model = model;
         if (reasoningEffort) threadOptions.modelReasoningEffort = reasoningEffort;
+        // Auto-approve all actions/tools (Codex CLI approval_policy="never")
+        threadOptions.approvalPolicy = "never";
         thread = codex.startThread(threadOptions);
     }
 

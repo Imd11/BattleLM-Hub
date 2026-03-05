@@ -35,7 +35,7 @@ class SessionManager: ObservableObject {
     
     private init() {}
 
-    private func broadcastToRemote(aiId: UUID, message: MessageDTO, isStreaming: Bool) {
+    func broadcastToRemote(aiId: UUID, message: MessageDTO, isStreaming: Bool) {
         Task { @MainActor in
             let payload = AIResponsePayload(aiId: aiId, message: message, isStreaming: isStreaming)
             RemoteHostServer.shared.broadcast(type: "aiResponse", payload: payload)

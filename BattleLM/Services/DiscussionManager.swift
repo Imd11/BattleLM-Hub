@@ -371,7 +371,7 @@ class DiscussionManager: ObservableObject {
         
         \(otherAnalyses)
         
-        Evaluate based on: Correct, Accuracy, Insight.
+        Evaluate on: Correctness, Completeness, Clarity, Constraints/Safety.
         
         Format:
         \(scoreFormat)
